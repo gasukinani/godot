@@ -6,23 +6,22 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
 
-    <!-- Fix EOL & Warnings -->
-    <CheckEolTargetFramework>false</CheckEolTargetFramework>
-    <NoWarn>$(NoWarn);NETSDK1202;XA0105</NoWarn>
-
     <!-- App Info -->
     <ApplicationId>com.queendom.godot</ApplicationId>
     <ApplicationVersion>1</ApplicationVersion>
     <ApplicationDisplayVersion>1.0</ApplicationDisplayVersion>
     <ApplicationTitle>Queendom Godot Silk Editor</ApplicationTitle>
 
-    <!-- APK Packaging Flags -->
+    <!-- Stability & Compatibility Flags -->
+    <CheckEolTargetFramework>false</CheckEolTargetFramework>
+    <NoWarn>$(NoWarn);NETSDK1202;XA0105</NoWarn>
     <AndroidPackageFormat>apk</AndroidPackageFormat>
     <AndroidEnablePreloadAssemblies>true</AndroidEnablePreloadAssemblies>
     <EmbedAssembliesIntoApk>true</EmbedAssembliesIntoApk>
-    
-    <!-- Auto-sign gamit ang default debug/CI keystore para di mag-error -->
     <AndroidKeyStore>false</AndroidKeyStore>
+    
+    <!-- Fast startup & JIT safety -->
+    <AndroidEnableProfiledAot>false</AndroidEnableProfiledAot>
   </PropertyGroup>
 
   <ItemGroup>
@@ -31,7 +30,7 @@
     <PackageReference Include="Silk.NET.Core" Version="2.22.0" />
   </ItemGroup>
 
-  <!-- Ligtas na pag-include ng .so libraries kahit wala pa o meron nang laman ang libs folder -->
+  <!-- Isama lang ang mga custom native Godot .so files kung mayroon -->
   <ItemGroup Condition="Exists('libs')">
     <AndroidNativeLibrary Include="libs\**\*.so" />
   </ItemGroup>
