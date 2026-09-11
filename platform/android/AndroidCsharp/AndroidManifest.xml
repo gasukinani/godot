@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    package="com.queendom.godot"
+    android:versionCode="1"
+    android:versionName="1.0">
+
+    <!-- 1. GRAPHICS ENGINE REQUIREMENTS (Godot 4 Rendering) -->
+    <uses-feature android:glEsVersion="0x00030000" android:required="true" />
+    <uses-feature android:name="android.hardware.vulkan.level" android:required="false" />
+    <uses-feature android:name="android.hardware.vulkan.version" android:required="false" />
+    <uses-feature android:name="android.hardware.touchscreen" android:required="true" />
+    <uses-feature android:name="android.hardware.touchscreen.multitouch" android:required="false" />
+
+    <!-- 2. STORAGE PERMISSIONS (Para mabasa at ma-save ang mga Godot Projects & .cs scripts) -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+    <!-- Android 11+ Full Storage Access para sa Editor Workspace -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" tools:ignore="ScopedStorage" />
+    
+    <!-- 3. SYSTEM & HARDWARE PERMISSIONS -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+
+    <application
+        android:label="Queendom Godot Editor"
+        android:icon="@mipmap/ic_launcher"
+        android:allowBackup="true"
+        android:supportsRtl="true"
+        
+        <!-- IMPORTANTE: Iwas-crash sa Memory at Dynamic .so Loading -->
+        android:hardwareAccelerated="true"
+        android:largeHeap="true"
+        android:extractNativeLibs="true"
+        android:requestLegacyExternalStorage="true">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:label="Queendom Godot"
+            
+            <!-- CRITICAL PARA SA SILKACTIVITY: 
+                 Pinipigilan ang Android OS na i-restart/patayin ang Activity
+                 kapag nag-rotate ang screen o nag-open ang keyboard (iwas SIGSEGV crash) -->
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|keyboard|navigation|density|fontScale|uiMode|locale"
+            
+            android:screenOrientation="sensorLandscape"
+            android:resizeableActivity="true"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
+
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+    </application>
+</manifest>
