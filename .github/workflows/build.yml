@@ -42,17 +42,16 @@ jobs:
 
       - name: Build and Package APK
         run: |
-          dotnet publish platform/android/AndroidCsharp/AndroidCsharp.csproj \
+          dotnet build platform/android/AndroidCsharp/AndroidCsharp.csproj \
             -c Release \
+            -t:PackageForAndroid \
             -p:CheckEolTargetFramework=false \
-            -p:AndroidPackageFormat=apk \
-            -p:AndroidEnablePreloadAssemblies=true \
-            -p:EmbedAssembliesIntoApk=true
+            -p:AndroidPackageFormat=apk
 
       - name: Locate Output APK
         id: find_apk
         run: |
-          APK_PATH=$(find platform/android/AndroidCsharp -type f -name "*Signed.apk" -o -name "*.apk" | head -n 1)
+          APK_PATH=$(find platform/android/AndroidCsharp -type f -name "*.apk" | head -n 1)
           echo "Found APK at: $APK_PATH"
           echo "apk_path=$APK_PATH" >> $GITHUB_OUTPUT
 
