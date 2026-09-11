@@ -5,6 +5,9 @@ using Android.OS;
 using Silk.NET.Windowing;
 using Silk.NET.Windowing.Sdl.Android;
 
+// ALIAS PARA MAIWASAN ANG PANGALANG CONFLICT SA ANDROID.VIEWS.WINDOW
+using SilkWindow = Silk.NET.Windowing.Window;
+
 namespace com.queendom.godot
 {
     [Activity(
@@ -23,12 +26,12 @@ namespace com.queendom.godot
             options.FramesPerSecond = 60;
             options.UpdatesPerSecond = 60;
 
-            // 2. Si Silk.NET na ang bahala sa Android Surface, Graphics Context, at Events
-            using var view = Window.GetView(options);
+            // 2. Gamitin ang SilkWindow para diretsong makuha ang Android View
+            using var view = SilkWindow.GetView(options);
 
             view.Load += () =>
             {
-                // Engine / Editor initialization logic dito
+                // Engine / Editor initialization
             };
 
             view.Update += (delta) =>
@@ -38,10 +41,10 @@ namespace com.queendom.godot
 
             view.Render += (delta) =>
             {
-                // Render frame loop
+                // Frame render loop
             };
 
-            // 3. Simulan ang main loop (Awtomatikong pinapatakbo ng Silk)
+            // 3. Patakbuhin ang main loop
             view.Run();
         }
     }
