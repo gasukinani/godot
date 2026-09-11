@@ -5,7 +5,7 @@ on:
     branches: [ "master", "main" ]
   pull_request:
     branches: [ "master", "main" ]
-  workflow_dispatch: # Pinapayagan kang i-click ang "Run workflow" manually sa GitHub
+  workflow_dispatch:
 
 jobs:
   build-apk:
@@ -13,50 +13,42 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. I-checkout ang repository code
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      # 2. I-setup ang Java JDK (Required ng Android SDK tools)
       - name: Setup Java JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
 
-      # 3. I-setup ang Android SDK at NDK
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      # 4. I-setup ang .NET 8 SDK
       - name: Setup .NET SDK
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '8.0.x'
+          dotnet-version: '9.0.x'
 
-      # 5. I-install ang .NET Android Workload para gumana ang net8.0-android
       - name: Install .NET Android Workload
         run: |
           dotnet workload install android --source https://api.nuget.org/v3/index.json
 
-      # 6. I-restore ang NuGet Packages (Silk.NET, atbp.)
       - name: Restore NuGet Packages
         run: |
-          dotnet restore platform/android/AndroidCsharp/AndroidCsharp.csproj
+          dotnet restore platform/android/AndroidCsharp/AndroidCsharp.csproj -p:CheckEolTargetFramework=false
 
-      # 7. I-build at I-package ang APK (Release Mode)
       - name: Build and Package APK
         run: |
           dotnet publish platform/android/AndroidCsharp/AndroidCsharp.csproj \
             -c Release \
-            -f net8.0-android \
+            -p:CheckEolTargetFramework=false \
             -p:AndroidPackageFormat=apk \
             -p:AndroidEnablePreloadAssemblies=true \
             -p:EmbedAssembliesIntoApk=true
 
-      # 8. Hanapin at i-save ang nagawang APK file
       - name: Locate Output APK
         id: find_apk
         run: |
@@ -64,7 +56,6 @@ jobs:
           echo "Found APK at: $APK_PATH"
           echo "apk_path=$APK_PATH" >> $GITHUB_OUTPUT
 
-      # 9. I-upload ang APK bilang Downloadable Artifact sa GitHub
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
