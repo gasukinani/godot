@@ -42,7 +42,6 @@
 
 GDMono *GDMono::singleton = nullptr;
 
-// AYOS: Helper para sa Path::get_csharp_project_name()
 namespace Path {
 static String get_csharp_project_name() {
 	String name;
@@ -453,7 +452,9 @@ static bool _on_core_api_assembly_loaded() {
 #ifdef DEBUG_ENABLED
 	debug = true;
 #endif
-	GDMonoCache::managed_callbacks.GD_OnCoreApiAssemblyLoaded(debug);
+	if (GDMonoCache::managed_callbacks.GD_OnCoreApiAssemblyLoaded) {
+		GDMonoCache::managed_callbacks.GD_OnCoreApiAssemblyLoaded(debug);
+	}
 	return true;
 }
 
@@ -539,10 +540,6 @@ void GDMono::initialize() {
 
 	_on_core_api_assembly_loaded();
 
-#ifdef TOOLS_ENABLED
-	_try_load_project_assembly();
-#endif
-
 	initialized = true;
 	write_mono_log(".NET: GDMono fully initialized! C# is active and ready.");
 }
@@ -552,9 +549,8 @@ void GDMono::_try_load_project_assembly() {
 	if (Engine::get_singleton()->is_project_manager_hint()) {
 		return;
 	}
-	if (!_load_project_assembly()) {
-		write_mono_log(".NET: Notice - Project assembly not yet loaded.");
-	}
+	// Ligtas na pag-load kung may aktwal na project .dll
+	_load_project_assembly();
 }
 #endif
 
@@ -573,9 +569,15 @@ bool GDMono::_load_project_assembly() {
 		return false;
 	}
 
+	if (!plugin_callbacks.LoadProjectAssemblyCallback) {
+		return false;
+	}
+
 	String assembly_name = Path::get_csharp_project_name();
 	String assembly_path = GodotSharpDirs::get_res_temp_assemblies_dir().path_join(assembly_name + ".dll");
-	assembly_path = ProjectSettings::get_singleton()->globalize_path(assembly_path);
+	if (ProjectSettings::get_singleton()) {
+		assembly_path = ProjectSettings::get_singleton()->globalize_path(assembly_path);
+	}
 
 #if defined(ANDROID_ENABLED)
 	if (!FileAccess::exists(assembly_path)) {
@@ -587,15 +589,18 @@ bool GDMono::_load_project_assembly() {
 #endif
 
 	if (!FileAccess::exists(assembly_path)) {
+		write_mono_log(".NET: Project assembly does not exist yet (" + assembly_name + ".dll). Safe skip.");
 		return false;
 	}
 
+	write_mono_log(".NET: Loading project assembly: " + assembly_path);
 	String loaded_assembly_path;
 	bool success = plugin_callbacks.LoadProjectAssemblyCallback(assembly_path.utf16().get_data(), &loaded_assembly_path);
 
 	if (success) {
 		project_assembly_path = loaded_assembly_path.simplify_path();
 		project_assembly_modified_time = FileAccess::get_modified_time(loaded_assembly_path);
+		write_mono_log(".NET: Project assembly loaded successfully!");
 	}
 	return success;
 }
@@ -609,6 +614,7 @@ GDMono::~GDMono() {
 	finalizing_scripts_domain = true;
 	if (hostfxr_dll_handle) {
 		OS::get_singleton()->close_dynamic_library(hostfxr_dll_handle);
+		hostfxr_dll_handle = nullptr;
 	}
 	if (coreclr_dll_handle) {
 		OS::get_singleton()->close_dynamic_library(coreclr_dll_handle);
