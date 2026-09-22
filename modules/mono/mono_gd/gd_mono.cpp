@@ -28,23 +28,7 @@
 #endif
 
 #ifdef ANDROID_ENABLED
-// Direktang typedefs para hindi mag-error ng 5 unknown types sa Editor Mode
-struct MonoAssembly;
-struct MonoAssemblyName;
-struct MonoImage;
-typedef enum {
-	MONO_IMAGE_OK,
-	MONO_IMAGE_ERROR_ERRNO,
-	MONO_IMAGE_MISSING_ASSEMBLYREF,
-	MONO_IMAGE_IMAGE_INVALID
-} MonoImageOpenStatus;
-
-typedef MonoAssembly *(*MonoAssemblyPreloadHook)(MonoAssemblyName *aname, char **assemblies_path, void *user_data);
-typedef void (*mono_install_assembly_preload_hook_fn)(MonoAssemblyPreloadHook func, void *user_data);
-typedef const char *(*mono_assembly_name_get_name_fn)(MonoAssemblyName *aname);
-typedef const char *(*mono_assembly_name_get_culture_fn)(MonoAssemblyName *aname);
-typedef MonoImage *(*mono_image_open_from_data_with_name_fn)(char *data, uint32_t data_len, int need_copy, MonoImageOpenStatus *status, int refonly, const char *name);
-typedef MonoAssembly *(*mono_assembly_load_from_full_fn)(MonoImage *image, const char *fname, MonoImageOpenStatus *status, int refonly);
+#include "../thirdparty/mono_delegates.h"
 #endif
 
 GDMono *GDMono::singleton = nullptr;
@@ -55,6 +39,7 @@ hostfxr_initialize_for_runtime_config_fn hostfxr_initialize_for_runtime_config =
 hostfxr_get_runtime_delegate_fn hostfxr_get_runtime_delegate = nullptr;
 hostfxr_close_fn hostfxr_close = nullptr;
 
+// Pinapayagan ang CoreCLR / MonoVM function pointers sa parehong Editor at Game sa Android
 typedef int(CORECLR_DELEGATE_CALLTYPE *coreclr_create_delegate_fn)(void *hostHandle, unsigned int domainId, const char *entryPointAssemblyName, const char *entryPointTypeName, const char *entryPointMethodName, void **delegate);
 typedef int(CORECLR_DELEGATE_CALLTYPE *coreclr_initialize_fn)(const char *exePath, const char *appDomainFriendlyName, int propertyCount, const char **propertyKeys, const char **propertyValues, void **hostHandle, unsigned int *domainId);
 
@@ -169,7 +154,6 @@ String find_hostfxr() {
 #if defined(ANDROID_ENABLED)
 	String ext_fxr = "/storage/emulated/0/mono/libhostfxr.so";
 	if (FileAccess::exists(ext_fxr)) {
-		print_verbose(".NET: Found hostfxr in external storage: " + ext_fxr);
 		return ext_fxr;
 	}
 #endif
@@ -255,6 +239,7 @@ bool load_hostfxr(void *&r_hostfxr_dll_handle) {
 	print_verbose("Found hostfxr: " + hostfxr_path);
 
 	Error err = OS::get_singleton()->open_dynamic_library(hostfxr_path, r_hostfxr_dll_handle);
+
 	if (err != OK) {
 		return false;
 	}
@@ -288,6 +273,7 @@ bool load_coreclr(void *&r_coreclr_dll_handle) {
 
 	bool is_monovm = false;
 	if (coreclr_path.is_empty()) {
+		// Fallback sa MonoVM
 		coreclr_path = find_monosgen();
 		is_monovm = true;
 	}
@@ -300,6 +286,7 @@ bool load_coreclr(void *&r_coreclr_dll_handle) {
 	print_verbose("Found " + coreclr_name + ": " + coreclr_path);
 
 	Error err = OS::get_singleton()->open_dynamic_library(coreclr_path, r_coreclr_dll_handle);
+
 	if (err != OK) {
 		return false;
 	}
@@ -528,12 +515,11 @@ MonoAssembly *load_assembly_from_pck(MonoAssemblyName *p_assembly_name, char **p
 }
 #endif
 
+// Pinapayagan ang CoreCLR / MonoVM initialization para sa Editor at Game sa Android
 godot_plugins_initialize_fn initialize_coreclr_and_godot_plugins(bool &r_runtime_initialized) {
 	godot_plugins_initialize_fn godot_plugins_initialize = nullptr;
 
-#ifndef TOOLS_ENABLED
 	String assembly_name = Path::get_csharp_project_name();
-#endif
 
 #ifdef ANDROID_ENABLED
 	if (mono_install_assembly_preload_hook != nullptr) {
@@ -550,12 +536,14 @@ godot_plugins_initialize_fn initialize_coreclr_and_godot_plugins(bool &r_runtime
 	print_verbose(".NET: CoreCLR/Mono initialized");
 
 #ifdef TOOLS_ENABLED
+	// Sa Editor mode, tinatawag natin ang InitializeFromEngine sa GodotPlugins
 	coreclr_create_delegate(coreclr_handle, domain_id,
 			"GodotPlugins",
 			"GodotPlugins.Main",
 			"InitializeFromEngine",
 			(void **)&godot_plugins_initialize);
 #else
+	// Sa Game mode, tinatawag ang InitializeFromGameProject
 	coreclr_create_delegate(coreclr_handle, domain_id,
 			assembly_name.utf8().get_data(),
 			"GodotPlugins.Game.Main",
@@ -615,12 +603,12 @@ void GDMono::initialize() {
 	}
 #endif
 
-	// 1. Subukang i-load ang hostfxr
+	// 1. Subukan munang i-load ang hostfxr
 	if (load_hostfxr(hostfxr_dll_handle)) {
 		godot_plugins_initialize = initialize_hostfxr_and_godot_plugins(runtime_initialized);
 	}
 
-	// 2. Fallback agad sa CoreCLR / MonoVM (libmonosgen-2.0.so) kapag walang hostfxr
+	// 2. Kapag walang hostfxr (tulad sa Android), mag-fallback agad sa CoreCLR / MonoVM (libmonosgen-2.0.so)!
 	if (godot_plugins_initialize == nullptr && load_coreclr(coreclr_dll_handle)) {
 		godot_plugins_initialize = initialize_coreclr_and_godot_plugins(runtime_initialized);
 	}
@@ -638,7 +626,7 @@ void GDMono::initialize() {
 
 	if (godot_plugins_initialize == nullptr) {
 #ifdef TOOLS_ENABLED
-		OS::get_singleton()->alert(TTR("Unable to load .NET runtime (hostfxr or monosgen).\nPakisiguradong nabigyan ng 'All files access' permission ang Godot sa Android Settings,\nat may libmonosgen-2.0.so sa /storage/emulated/0/mono/."), TTR("Failed to load .NET runtime"));
+		OS::get_singleton()->alert(TTR("Unable to load .NET runtime (hostfxr or monosgen).\nPakisiguradong nabigyan ng 'All files access' permission ang Godot sa Android Settings,\nat may libmonosgen-2.0.so o libhostfxr.so sa /storage/emulated/0/mono/."), TTR("Failed to load .NET runtime"));
 #endif
 		ERR_FAIL_MSG(".NET: Failed to load .NET runtime");
 	}
