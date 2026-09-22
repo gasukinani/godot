@@ -476,9 +476,71 @@ godot_plugins_initialize_fn initialize_coreclr_and_godot_plugins(bool &r_runtime
 
 	void *coreclr_handle = nullptr;
 	unsigned int domain_id = 0;
-	int rc = coreclr_initialize(nullptr, nullptr, 0, nullptr, nullptr, &coreclr_handle, &domain_id);
+
+	// =========================================================================
+	// TPA (Trusted Platform Assemblies) & APP_PATHS Configuration para sa Android
+	// =========================================================================
+	PackedStringArray tpa_list;
+	PackedStringArray app_paths;
+
+	static const char *search_dirs[] = {
+		"/storage/emulated/0/mono",
+		"/storage/emulated/0/mono/assemblies",
+		"/storage/emulated/0/mono/GodotSharp/Api/Debug",
+		"/storage/emulated/0/mono/Tools",
+		nullptr
+	};
+
+	for (int i = 0; search_dirs[i] != nullptr; i++) {
+		String dir_path = search_dirs[i];
+		if (DirAccess::exists(dir_path)) {
+			app_paths.append(dir_path);
+			Ref<DirAccess> da = DirAccess::open(dir_path);
+			if (da.is_valid()) {
+				da->list_dir_begin();
+				for (String file = da->get_next(); !file.is_empty(); file = da->get_next()) {
+					if (!da->current_is_dir() && file.ends_with(".dll")) {
+						tpa_list.append(dir_path.path_join(file));
+					}
+				}
+			}
+		}
+	}
+
+	String tpa_paths_str = String(":").join(tpa_list);
+	String app_paths_str = String(":").join(app_paths);
+
+	const char *property_keys[] = {
+		"TRUSTED_PLATFORM_ASSEMBLIES",
+		"APP_PATHS",
+		"APP_NI_PATHS",
+		"NativeDllSearchDirectories"
+	};
+
+	CharString tpa_utf8 = tpa_paths_str.utf8();
+	CharString app_utf8 = app_paths_str.utf8();
+	const char *property_values[] = {
+		tpa_utf8.get_data(),
+		app_utf8.get_data(),
+		app_utf8.get_data(),
+		app_utf8.get_data()
+	};
+
+	int property_count = (tpa_list.is_empty()) ? 0 : 4;
+
+	print_verbose(".NET: Initializing CoreCLR with " + itos(tpa_list.size()) + " TPA assemblies.");
+
+	int rc = coreclr_initialize(
+			"/data/data/org.godotengine.editor.v4.debug/files",
+			"GodotEngineDomain",
+			property_count,
+			property_keys,
+			property_values,
+			&coreclr_handle,
+			&domain_id);
+
 	if (rc != 0 || coreclr_handle == nullptr) {
-		ERR_PRINT(".NET: Failed to initialize CoreCLR/Mono runtime.");
+		ERR_PRINT(vformat(".NET: Failed to initialize CoreCLR/Mono runtime. Error code (HRESULT): 0x%X", (unsigned int)rc));
 		return nullptr;
 	}
 
