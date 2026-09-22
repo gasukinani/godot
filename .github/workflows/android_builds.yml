@@ -110,11 +110,14 @@ jobs:
       - name: Copy & Organize APK Outputs
         run: |
           mkdir -p build_output/
-          # Kopyahin ang nabuong APK
-          find platform/android/java/app/build/outputs/apk/ -name "*.apk" -exec cp {} build_output/ \;
-          # Kopyahin din ang native .so libraries
+          # Hahanapin ang APK kahit saan nilagay ng Gradle sa repo
+          find . -name "*.apk" -exec cp -v {} build_output/ \;
+          
           mkdir -p build_output/libs/
-          find bin/ -name "*android*.so" -exec cp {} build_output/libs/ \; || true
+          find bin/ -name "*android*.so" -exec cp -v {} build_output/libs/ \; || true
+
+          echo "Mga nahanap na APK:"
+          ls -la build_output/
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
