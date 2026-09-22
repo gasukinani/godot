@@ -589,6 +589,16 @@ bool GDMono::_load_project_assembly() {
 	}
 	return success;
 }
+
+Error GDMono::reload_project_assemblies() {
+	if (!runtime_initialized) {
+		return ERR_BUG;
+	}
+	if (!_load_project_assembly()) {
+		return ERR_CANT_OPEN;
+	}
+	return OK;
+}
 #endif
 
 GDMono::GDMono() {
@@ -610,6 +620,13 @@ GDMono::~GDMono() {
 
 namespace mono_bind {
 GodotSharp *GodotSharp::singleton = nullptr;
+void GodotSharp::reload_assemblies(bool p_soft_reload) {
+#ifdef TOOLS_ENABLED
+	if (GDMono::get_singleton()) {
+		GDMono::get_singleton()->reload_project_assemblies();
+	}
+#endif
+}
 GodotSharp::GodotSharp() { singleton = this; }
 GodotSharp::~GodotSharp() { singleton = nullptr; }
 } // namespace mono_bind
