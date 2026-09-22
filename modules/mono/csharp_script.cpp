@@ -5,6 +5,28 @@
 /*                             GODOT ENGINE                               */
 /*                        https://godotengine.org                         */
 /**************************************************************************/
+/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
+/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
+/*                                                                        */
+/* Permission is hereby granted, free of charge, to any person obtaining  */
+/* a copy of this software and associated documentation files (the        */
+/* "Software"), to deal in the Software without restriction, including    */
+/* without limitation the rights to use, copy, modify, merge, publish,    */
+/* distribute, sublicense, and/or sell copies of the Software, and to     */
+/* permit persons to whom the Software is furnished to do so, subject to  */
+/* the following conditions:                                              */
+/*                                                                        */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
+/*                                                                        */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
+/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
+/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
+/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
+/**************************************************************************/
 
 #include "csharp_script.h"
 
@@ -219,6 +241,7 @@ bool CSharpLanguage::is_using_templates() {
 }
 
 #ifdef TOOLS_ENABLED
+// Awtomatikong nililikha ang .csproj at .sln para maiwasan ang MSBuild exception crash
 static void _ensure_csharp_project_files_exist() {
 	if (!Engine::get_singleton()->is_editor_hint()) {
 		return;
@@ -236,6 +259,7 @@ static void _ensure_csharp_project_files_exist() {
 	String csproj_path = ProjectSettings::get_singleton()->globalize_path("res://" + project_name + ".csproj");
 	String sln_path = ProjectSettings::get_singleton()->globalize_path("res://" + project_name + ".sln");
 
+	// 1. Gumawa ng .csproj kung wala pa
 	if (!FileAccess::exists(csproj_path)) {
 		Ref<FileAccess> f = FileAccess::open(csproj_path, FileAccess::WRITE);
 		if (f.is_valid()) {
@@ -252,6 +276,7 @@ static void _ensure_csharp_project_files_exist() {
 		}
 	}
 
+	// 2. Gumawa ng .sln kung wala pa
 	if (!FileAccess::exists(sln_path)) {
 		Ref<FileAccess> f = FileAccess::open(sln_path, FileAccess::WRITE);
 		if (f.is_valid()) {
@@ -370,8 +395,8 @@ String CSharpLanguage::get_global_class_name(const String &p_path, String *r_bas
 	}
 
 	// =========================================================================
-	// CRASH FIX: Proteksyon sa nullptr dereference sa loob ng C# bridge!
-	// Gumamit ng dummy stack variables kapag nullptr ang ipinasa ng Godot caller.
+	// CRASH FIX: Proteksyon laban sa nullptr dereference sa loob ng C# bridge!
+	// Gumamit ng dummy stack variables kapag nullptr ang ipinasa ng caller.
 	// =========================================================================
 	String base_type;
 	String icon_path;
@@ -926,6 +951,12 @@ bool CSharpLanguage::debug_break(const String &p_error, bool p_allow_continue) {
 
 #ifdef TOOLS_ENABLED
 void CSharpLanguage::_editor_init_callback() {
+#if defined(ANDROID_ENABLED)
+	// CRASH FIX: Sa Android, i-skip ang GodotTools.dll dahil naghahanap ito ng
+	// desktop Microsoft.Build.dll na nagdudulot ng crash kapag nag-create ng script.
+	print_verbose(".NET: Skipping GodotTools plugin on Android to prevent MSBuild crash.");
+	return;
+#else
 	if (!GDMono::get_singleton() || !GDMono::get_singleton()->is_runtime_initialized() || GDMono::get_singleton()->get_plugin_callbacks().LoadToolsAssemblyCallback == nullptr) {
 		print_verbose(".NET: Runtime not initialized or LoadToolsAssemblyCallback missing, skipping GodotTools plugin loading.");
 		return;
@@ -934,16 +965,6 @@ void CSharpLanguage::_editor_init_callback() {
 	int32_t interop_funcs_size = 0;
 	const void **interop_funcs = godotsharp::get_editor_interop_funcs(interop_funcs_size);
 	String tools_path = GodotSharpDirs::get_data_editor_tools_dir().path_join("GodotTools.dll");
-
-#if defined(ANDROID_ENABLED)
-	if (!FileAccess::exists(tools_path)) {
-		if (FileAccess::exists("/storage/emulated/0/mono/Tools/GodotTools.dll")) {
-			tools_path = "/storage/emulated/0/mono/Tools/GodotTools.dll";
-		} else if (FileAccess::exists("/storage/emulated/0/mono/GodotTools.dll")) {
-			tools_path = "/storage/emulated/0/mono/GodotTools.dll";
-		}
-	}
-#endif
 
 	print_verbose(".NET: Loading GodotTools assembly from: " + tools_path);
 
@@ -966,6 +987,7 @@ void CSharpLanguage::_editor_init_callback() {
 	godotsharp_editor->enable_plugin();
 
 	get_singleton()->godotsharp_editor = godotsharp_editor;
+#endif
 }
 #endif
 
