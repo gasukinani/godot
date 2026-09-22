@@ -1,3 +1,11 @@
+/**************************************************************************/
+/*  gd_mono.cpp                                                           */
+/**************************************************************************/
+/*                         This file is part of:                          */
+/*                             GODOT ENGINE                               */
+/*                        https://godotengine.org                         */
+/**************************************************************************/
+
 #include "gd_mono.h"
 
 #include "../glue/runtime_interop.h"
@@ -52,18 +60,16 @@ mono_assembly_name_get_culture_fn mono_assembly_name_get_culture = nullptr;
 mono_image_open_from_data_with_name_fn mono_image_open_from_data_with_name = nullptr;
 mono_assembly_load_from_full_fn mono_assembly_load_from_full = nullptr;
 
-// Helper: Kinokopya ang .so mula external storage papuntang internal storage para maiwasan ang SELinux noexec crash
 String prepare_android_executable_lib(const String &p_filename) {
 	String ext_path = String("/storage/emulated/0/mono").path_join(p_filename);
 	if (!FileAccess::exists(ext_path)) {
-		return p_filename; // Subukan ang APK internal libs fallback
+		return p_filename;
 	}
 
 	String internal_dir = OS::get_singleton()->get_user_data_dir().path_join("mono_libs");
 	DirAccess::make_dir_recursive_absolute(internal_dir);
 	String internal_path = internal_dir.path_join(p_filename);
 
-	// Kopyahin kung wala pa o kung mas bago ang nasa external storage
 	if (!FileAccess::exists(internal_path) || FileAccess::get_modified_time(ext_path) > FileAccess::get_modified_time(internal_path)) {
 		Vector<uint8_t> data = FileAccess::get_file_as_bytes(ext_path);
 		if (!data.is_empty()) {
@@ -495,12 +501,11 @@ godot_plugins_initialize_fn initialize_coreclr_and_godot_plugins(bool &r_runtime
 
 bool GDMono::should_initialize() {
 #if defined(ANDROID_ENABLED)
-	// Ligtas na check sa Android: Huwag mag-crash sa startup kung wala pa namang runtime o storage permission
 	if (DirAccess::exists("/storage/emulated/0/mono") || DirAccess::exists(OS::get_singleton()->get_user_data_dir().path_join("mono_libs"))) {
 		return true;
 	}
 #ifdef TOOLS_ENABLED
-	return false; // I-disable muna ang C# startup sa unang bukas para makapasok sa Editor nang walang crash!
+	return false;
 #else
 	return OS::get_singleton()->has_feature("dotnet");
 #endif
@@ -534,7 +539,7 @@ void GDMono::initialize() {
 	bool dir_exists = DirAccess::exists(assemblies_dir);
 
 #if defined(ANDROID_ENABLED)
-	if (!dir_exists && DirAccess::exists("/storage/emulated/0/mono")) {
+	if (!dir_exists && (DirAccess::exists("/storage/emulated/0/mono") || DirAccess::exists(OS::get_singleton()->get_user_data_dir().path_join("mono")))) {
 		dir_exists = true;
 	}
 #endif
@@ -545,15 +550,25 @@ void GDMono::initialize() {
 	}
 #endif
 
-	// 1. Subukan ang hostfxr
+#if defined(ANDROID_ENABLED)
+	// ANDROID FIX: Sa Android, libmonosgen-2.0.so (CoreCLR interop) ang unang gamitin
+	// para maiwasan ang "libdl.so.2 not found" error mula sa desktop libhostfxr.so
+	if (load_coreclr(coreclr_dll_handle)) {
+		godot_plugins_initialize = initialize_coreclr_and_godot_plugins(runtime_initialized);
+	}
+
+	if (godot_plugins_initialize == nullptr && load_hostfxr(hostfxr_dll_handle)) {
+		godot_plugins_initialize = initialize_hostfxr_and_godot_plugins(runtime_initialized);
+	}
+#else
 	if (load_hostfxr(hostfxr_dll_handle)) {
 		godot_plugins_initialize = initialize_hostfxr_and_godot_plugins(runtime_initialized);
 	}
 
-	// 2. Fallback sa CoreCLR / Mono
 	if (godot_plugins_initialize == nullptr && load_coreclr(coreclr_dll_handle)) {
 		godot_plugins_initialize = initialize_coreclr_and_godot_plugins(runtime_initialized);
 	}
+#endif
 
 	if (godot_plugins_initialize == nullptr) {
 		WARN_PRINT(".NET: Could not initialize runtime. C# will be disabled for this session.");
