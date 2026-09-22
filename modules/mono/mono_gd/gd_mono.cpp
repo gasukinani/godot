@@ -51,6 +51,33 @@ mono_assembly_name_get_name_fn mono_assembly_name_get_name = nullptr;
 mono_assembly_name_get_culture_fn mono_assembly_name_get_culture = nullptr;
 mono_image_open_from_data_with_name_fn mono_image_open_from_data_with_name = nullptr;
 mono_assembly_load_from_full_fn mono_assembly_load_from_full = nullptr;
+
+// Helper: Kinokopya ang .so mula external storage papuntang internal storage para maiwasan ang SELinux noexec crash
+String prepare_android_executable_lib(const String &p_filename) {
+	String ext_path = String("/storage/emulated/0/mono").path_join(p_filename);
+	if (!FileAccess::exists(ext_path)) {
+		return p_filename; // Subukan ang APK internal libs fallback
+	}
+
+	String internal_dir = OS::get_singleton()->get_user_data_dir().path_join("mono_libs");
+	DirAccess::make_dir_recursive_absolute(internal_dir);
+	String internal_path = internal_dir.path_join(p_filename);
+
+	// Kopyahin kung wala pa o kung mas bago ang nasa external storage
+	if (!FileAccess::exists(internal_path) || FileAccess::get_modified_time(ext_path) > FileAccess::get_modified_time(internal_path)) {
+		Vector<uint8_t> data = FileAccess::get_file_as_bytes(ext_path);
+		if (!data.is_empty()) {
+			Ref<FileAccess> dst = FileAccess::open(internal_path, FileAccess::WRITE);
+			if (dst.is_valid()) {
+				dst->store_buffer(data.ptr(), data.size());
+				dst->close();
+				print_verbose(".NET: Successfully copied " + p_filename + " to internal storage: " + internal_path);
+			}
+		}
+	}
+
+	return FileAccess::exists(internal_path) ? internal_path : p_filename;
+}
 #endif
 
 #ifdef _WIN32
@@ -124,11 +151,7 @@ bool try_get_dotnet_root_from_command_line(String &r_dotnet_root) {
 
 String find_hostfxr() {
 #if defined(ANDROID_ENABLED)
-	String ext_fxr = "/storage/emulated/0/mono/libhostfxr.so";
-	if (FileAccess::exists(ext_fxr)) {
-		return ext_fxr;
-	}
-	return "libhostfxr.so";
+	return prepare_android_executable_lib("libhostfxr.so");
 #else
 #ifdef TOOLS_ENABLED
 	String dotnet_root;
@@ -160,11 +183,7 @@ String find_hostfxr() {
 
 String find_monosgen() {
 #if defined(ANDROID_ENABLED)
-	String external_path = "/storage/emulated/0/mono/libmonosgen-2.0.so";
-	if (FileAccess::exists(external_path)) {
-		return external_path;
-	}
-	return "libmonosgen-2.0.so";
+	return prepare_android_executable_lib("libmonosgen-2.0.so");
 #else
 #if defined(WINDOWS_ENABLED)
 	String probe_path = GodotSharpDirs::get_api_assemblies_dir().path_join("monosgen-2.0.dll");
@@ -182,11 +201,7 @@ String find_monosgen() {
 
 String find_coreclr() {
 #if defined(ANDROID_ENABLED)
-	String external_path = "/storage/emulated/0/mono/libcoreclr.so";
-	if (FileAccess::exists(external_path)) {
-		return external_path;
-	}
-	return "libcoreclr.so";
+	return prepare_android_executable_lib("libcoreclr.so");
 #else
 #if defined(WINDOWS_ENABLED)
 	String probe_path = GodotSharpDirs::get_api_assemblies_dir().path_join("coreclr.dll");
@@ -408,7 +423,6 @@ MonoAssembly *load_assembly_from_pck(MonoAssemblyName *p_assembly_name, char **p
 		assembly_name += ".dll";
 	}
 
-	// Inayos: Naka-wrap na sa String(...) ang path
 	String ext_path_assemblies = String("/storage/emulated/0/mono/assemblies").path_join(assembly_name);
 	String ext_path_root = String("/storage/emulated/0/mono").path_join(assembly_name);
 	String path;
@@ -480,7 +494,17 @@ godot_plugins_initialize_fn initialize_coreclr_and_godot_plugins(bool &r_runtime
 } // namespace
 
 bool GDMono::should_initialize() {
+#if defined(ANDROID_ENABLED)
+	// Ligtas na check sa Android: Huwag mag-crash sa startup kung wala pa namang runtime o storage permission
+	if (DirAccess::exists("/storage/emulated/0/mono") || DirAccess::exists(OS::get_singleton()->get_user_data_dir().path_join("mono_libs"))) {
+		return true;
+	}
 #ifdef TOOLS_ENABLED
+	return false; // I-disable muna ang C# startup sa unang bukas para makapasok sa Editor nang walang crash!
+#else
+	return OS::get_singleton()->has_feature("dotnet");
+#endif
+#elif defined(TOOLS_ENABLED)
 	return true;
 #else
 	return OS::get_singleton()->has_feature("dotnet");
@@ -516,12 +540,12 @@ void GDMono::initialize() {
 #endif
 
 	if (!dir_exists) {
-		OS::get_singleton()->alert(vformat(RTR("Unable to find the .NET assemblies directory.\nMake sure the '%s' directory exists and contains the .NET assemblies."), assemblies_dir), RTR(".NET assemblies not found"));
-		ERR_FAIL_MSG(".NET: Assemblies not found");
+		WARN_PRINT(".NET: Assemblies directory not found. Skipping .NET initialization.");
+		return;
 	}
 #endif
 
-	// 1. Subukan munang mag-load gamit ang hostfxr
+	// 1. Subukan ang hostfxr
 	if (load_hostfxr(hostfxr_dll_handle)) {
 		godot_plugins_initialize = initialize_hostfxr_and_godot_plugins(runtime_initialized);
 	}
@@ -532,10 +556,8 @@ void GDMono::initialize() {
 	}
 
 	if (godot_plugins_initialize == nullptr) {
-#ifdef TOOLS_ENABLED
-		OS::get_singleton()->alert(TTR("Hindi ma-load ang .NET runtime (hostfxr o libmonosgen-2.0.so).\nPakisigurado na may storage permission at may runtime libraries sa /storage/emulated/0/mono/."), TTR("Failed to load .NET runtime"));
-#endif
-		ERR_FAIL_MSG(".NET: Failed to load .NET runtime");
+		WARN_PRINT(".NET: Could not initialize runtime. C# will be disabled for this session.");
+		return;
 	}
 
 	int32_t interop_funcs_size = 0;
@@ -554,16 +576,22 @@ void GDMono::initialize() {
 			Engine::get_singleton()->is_editor_hint(),
 			&plugin_callbacks_res, &managed_callbacks,
 			interop_funcs, interop_funcs_size);
-	ERR_FAIL_COND_MSG(!init_ok, ".NET: GodotPlugins initialization failed");
+	if (!init_ok) {
+		ERR_PRINT(".NET: GodotPlugins initialization failed");
+		return;
+	}
 	plugin_callbacks = plugin_callbacks_res;
 #else
 	bool init_ok = godot_plugins_initialize(godot_dll_handle, &managed_callbacks,
 			interop_funcs, interop_funcs_size);
-	ERR_FAIL_COND_MSG(!init_ok, ".NET: GodotPlugins initialization failed");
+	if (!init_ok) {
+		ERR_PRINT(".NET: GodotPlugins initialization failed");
+		return;
+	}
 #endif
 
 	GDMonoCache::update_godot_api_cache(managed_callbacks);
-	print_verbose(".NET: GodotPlugins initialized");
+	print_verbose(".NET: GodotPlugins initialized successfully");
 
 	_on_core_api_assembly_loaded();
 
@@ -621,7 +649,6 @@ bool GDMono::_load_project_assembly() {
 
 #if defined(ANDROID_ENABLED)
 	if (!FileAccess::exists(assembly_path)) {
-		// Inayos: Naka-wrap na sa String(...) ang path
 		String ext_path = String("/storage/emulated/0/mono/assemblies").path_join(assembly_name + ".dll");
 		if (FileAccess::exists(ext_path)) {
 			assembly_path = ext_path;
