@@ -30,7 +30,7 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      # 1. Kuhanin ang custom repo mo (para makuha ang gd_mono.cpp)
+      # 1. Kuhanin ang custom repo mo
       - name: Checkout Custom Repository
         uses: actions/checkout@v4
         with:
@@ -45,14 +45,19 @@ jobs:
           path: 'godot_src'
           submodules: recursive
 
-      # 3. I-bypass ang harang sa mono_configure.py at i-apply ang gd_mono.cpp
+      # 3. I-bypass ang harang at i-inject ang custom gd_mono.cpp at mono_delegates.h
       - name: Patch Godot 4.3 for Android Mono Editor Support
         run: |
           echo "Bypassing editor platform check in mono_configure.py..."
           sed -i 's/raise RuntimeError("This module does not currently support building for this platform for editor builds.")/pass/' godot_src/modules/mono/build_scripts/mono_configure.py
 
-          echo "Injecting custom gd_mono.cpp..."
+          echo "Injecting custom gd_mono.cpp and thirdparty headers..."
           cp -fv custom_repo/modules/mono/mono_gd/gd_mono.cpp godot_src/modules/mono/mono_gd/gd_mono.cpp
+          
+          if [ -d "custom_repo/modules/mono/thirdparty" ]; then
+            mkdir -p godot_src/modules/mono/thirdparty
+            cp -rfv custom_repo/modules/mono/thirdparty/* godot_src/modules/mono/thirdparty/
+          fi
 
       - name: Set up Java JDK 17
         uses: actions/setup-java@v4
@@ -169,17 +174,10 @@ jobs:
             ./gradlew generateGodotTemplates --stacktrace
           fi
 
-      # 7. Upload Artifact
-      - name: Collect and Upload Output APK
-        run: |
-          mkdir -p build_output/apk/
-          find godot_src/bin/ godot_src/platform/android/java -name "*.apk" -exec cp -v {} build_output/apk/ \;
-          echo "Output APKs:"
-          ls -la build_output/apk/
-
+      # 7. Collect and Upload APK Output
       - name: Upload Godot 4.3 Editor APK
         uses: actions/upload-artifact@v4
         with:
           name: godot-4.3-android-mono-apk
-          path: build_output/apk/*.apk
+          path: godot_src/bin/*.apk
           if-no-files-found: error
