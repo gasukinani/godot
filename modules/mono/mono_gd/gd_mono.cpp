@@ -42,24 +42,6 @@
 
 GDMono *GDMono::singleton = nullptr;
 
-namespace Path {
-static String get_csharp_project_name() {
-	String name;
-	if (ProjectSettings::get_singleton()) {
-		if (ProjectSettings::get_singleton()->has_setting("dotnet/project/assembly_name")) {
-			name = ProjectSettings::get_singleton()->get_setting("dotnet/project/assembly_name");
-		}
-		if (name.is_empty() && ProjectSettings::get_singleton()->has_setting("application/config/name")) {
-			name = ProjectSettings::get_singleton()->get_setting("application/config/name");
-		}
-	}
-	if (name.is_empty()) {
-		name = "Game";
-	}
-	return name;
-}
-} // namespace Path
-
 namespace {
 
 void write_mono_log(const String &p_msg) {
@@ -83,12 +65,25 @@ hostfxr_initialize_for_runtime_config_fn hostfxr_initialize_for_runtime_config =
 hostfxr_get_runtime_delegate_fn hostfxr_get_runtime_delegate = nullptr;
 hostfxr_close_fn hostfxr_close = nullptr;
 
-typedef int(CORECLR_DELEGATE_CALLTYPE *coreclr_create_delegate_fn)(void *hostHandle, unsigned int domainId, const char *entryPointAssemblyName, const char *entryPointTypeName, const char *entryPointMethodName, void **delegate);
-typedef int(CORECLR_DELEGATE_CALLTYPE *coreclr_initialize_fn)(const char *exePath, const char *appDomainFriendlyName, int propertyCount, const char **propertyKeys, const char **propertyValues, void **hostHandle, unsigned int *domainId);
+typedef int(CORECLR_DELEGATE_CALLTYPE *coreclr_create_delegate_fn)(
+		void *hostHandle,
+		unsigned int domainId,
+		const char *entryPointAssemblyName,
+		const char *entryPointTypeName,
+		const char *entryPointMethodName,
+		void **delegate);
+
+typedef int(CORECLR_DELEGATE_CALLTYPE *coreclr_initialize_fn)(
+		const char *exePath,
+		const char *appDomainFriendlyName,
+		int propertyCount,
+		const char **propertyKeys,
+		const char **propertyValues,
+		void **hostHandle,
+		unsigned int *domainId);
 
 coreclr_create_delegate_fn coreclr_create_delegate = nullptr;
 coreclr_initialize_fn coreclr_initialize = nullptr;
-void *coreclr_dll_handle = nullptr;
 
 #ifdef ANDROID_ENABLED
 mono_install_assembly_preload_hook_fn mono_install_assembly_preload_hook = nullptr;
@@ -242,18 +237,22 @@ bool load_coreclr(void *&r_coreclr_dll_handle) {
 	if (err == OK) {
 		mono_install_assembly_preload_hook = (mono_install_assembly_preload_hook_fn)symbol;
 	}
+
 	err = OS::get_singleton()->get_dynamic_library_symbol_handle(lib, "mono_assembly_name_get_name", symbol);
 	if (err == OK) {
 		mono_assembly_name_get_name = (mono_assembly_name_get_name_fn)symbol;
 	}
+
 	err = OS::get_singleton()->get_dynamic_library_symbol_handle(lib, "mono_assembly_name_get_culture", symbol);
 	if (err == OK) {
 		mono_assembly_name_get_culture = (mono_assembly_name_get_culture_fn)symbol;
 	}
+
 	err = OS::get_singleton()->get_dynamic_library_symbol_handle(lib, "mono_image_open_from_data_with_name", symbol);
 	if (err == OK) {
 		mono_image_open_from_data_with_name = (mono_image_open_from_data_with_name_fn)symbol;
 	}
+
 	err = OS::get_singleton()->get_dynamic_library_symbol_handle(lib, "mono_assembly_load_from_full", symbol);
 	if (err == OK) {
 		mono_assembly_load_from_full = (mono_assembly_load_from_full_fn)symbol;
@@ -402,14 +401,18 @@ godot_plugins_initialize_fn initialize_coreclr_and_godot_plugins(bool &r_runtime
 	write_mono_log(".NET: CoreCLR/Mono initialized successfully.");
 
 #ifdef TOOLS_ENABLED
-	int del_rc = coreclr_create_delegate(coreclr_handle, domain_id,
+	int del_rc = coreclr_create_delegate(
+			coreclr_handle,
+			domain_id,
 			"GodotPlugins",
 			"GodotPlugins.Main",
 			"InitializeFromEngine",
 			(void **)&godot_plugins_initialize);
 
 	if (del_rc != 0 || godot_plugins_initialize == nullptr) {
-		del_rc = coreclr_create_delegate(coreclr_handle, domain_id,
+		del_rc = coreclr_create_delegate(
+				coreclr_handle,
+				domain_id,
 				"GodotPlugins, Version=4.3.0.0, Culture=neutral, PublicKeyToken=null",
 				"GodotPlugins.Main",
 				"InitializeFromEngine",
@@ -417,7 +420,9 @@ godot_plugins_initialize_fn initialize_coreclr_and_godot_plugins(bool &r_runtime
 	}
 #else
 	String assembly_name = Path::get_csharp_project_name();
-	int del_rc = coreclr_create_delegate(coreclr_handle, domain_id,
+	int del_rc = coreclr_create_delegate(
+			coreclr_handle,
+			domain_id,
 			assembly_name.utf8().get_data(),
 			"GodotPlugins.Game.Main",
 			"InitializeFromGameProject",
@@ -452,9 +457,7 @@ static bool _on_core_api_assembly_loaded() {
 #ifdef DEBUG_ENABLED
 	debug = true;
 #endif
-	if (GDMonoCache::managed_callbacks.GD_OnCoreApiAssemblyLoaded) {
-		GDMonoCache::managed_callbacks.GD_OnCoreApiAssemblyLoaded(debug);
-	}
+	GDMonoCache::managed_callbacks.GD_OnCoreApiAssemblyLoaded(debug);
 	return true;
 }
 
@@ -515,10 +518,7 @@ void GDMono::initialize() {
 #ifdef TOOLS_ENABLED
 	gdmono::PluginCallbacks plugin_callbacks_res;
 	write_mono_log(".NET: Calling godot_plugins_initialize()...");
-	bool init_ok = godot_plugins_initialize(godot_dll_handle,
-			Engine::get_singleton()->is_editor_hint(),
-			&plugin_callbacks_res, &managed_callbacks,
-			interop_funcs, interop_funcs_size);
+	bool init_ok = godot_plugins_initialize(godot_dll_handle, Engine::get_singleton()->is_editor_hint(), &plugin_callbacks_res, &managed_callbacks, interop_funcs, interop_funcs_size);
 	if (!init_ok) {
 		write_mono_log(".NET: CRITICAL ERROR - godot_plugins_initialize() RETURNED FALSE!");
 		ERR_PRINT(".NET: GodotPlugins initialization failed. Check /storage/emulated/0/mono/mono_log.txt");
@@ -526,8 +526,7 @@ void GDMono::initialize() {
 	}
 	plugin_callbacks = plugin_callbacks_res;
 #else
-	bool init_ok = godot_plugins_initialize(godot_dll_handle, &managed_callbacks,
-			interop_funcs, interop_funcs_size);
+	bool init_ok = godot_plugins_initialize(godot_dll_handle, &managed_callbacks, interop_funcs, interop_funcs_size);
 	if (!init_ok) {
 		write_mono_log(".NET: CRITICAL ERROR - godot_plugins_initialize() RETURNED FALSE!");
 		ERR_PRINT(".NET: GodotPlugins initialization failed. Check /storage/emulated/0/mono/mono_log.txt");
@@ -540,6 +539,10 @@ void GDMono::initialize() {
 
 	_on_core_api_assembly_loaded();
 
+#ifdef TOOLS_ENABLED
+	_try_load_project_assembly();
+#endif
+
 	initialized = true;
 	write_mono_log(".NET: GDMono fully initialized! C# is active and ready.");
 }
@@ -549,8 +552,9 @@ void GDMono::_try_load_project_assembly() {
 	if (Engine::get_singleton()->is_project_manager_hint()) {
 		return;
 	}
-	// Ligtas na pag-load kung may aktwal na project .dll
-	_load_project_assembly();
+	if (!_load_project_assembly()) {
+		write_mono_log(".NET: Notice - Project assembly not yet loaded.");
+	}
 }
 #endif
 
@@ -563,21 +567,33 @@ void GDMono::_init_godot_api_hashes() {
 #endif
 }
 
+#ifdef DEBUG_ENABLED
+uint64_t GDMono::get_api_core_hash() {
+	if (api_core_hash == 0) {
+		api_core_hash = ClassDB::get_api_hash(ClassDB::API_CORE);
+	}
+	return api_core_hash;
+}
+
+#ifdef TOOLS_ENABLED
+uint64_t GDMono::get_api_editor_hash() {
+	if (api_editor_hash == 0) {
+		api_editor_hash = ClassDB::get_api_hash(ClassDB::API_EDITOR);
+	}
+	return api_editor_hash;
+}
+#endif
+#endif
+
 #ifdef TOOLS_ENABLED
 bool GDMono::_load_project_assembly() {
 	if (!initialized) {
 		return false;
 	}
 
-	if (!plugin_callbacks.LoadProjectAssemblyCallback) {
-		return false;
-	}
-
 	String assembly_name = Path::get_csharp_project_name();
 	String assembly_path = GodotSharpDirs::get_res_temp_assemblies_dir().path_join(assembly_name + ".dll");
-	if (ProjectSettings::get_singleton()) {
-		assembly_path = ProjectSettings::get_singleton()->globalize_path(assembly_path);
-	}
+	assembly_path = ProjectSettings::get_singleton()->globalize_path(assembly_path);
 
 #if defined(ANDROID_ENABLED)
 	if (!FileAccess::exists(assembly_path)) {
@@ -589,18 +605,15 @@ bool GDMono::_load_project_assembly() {
 #endif
 
 	if (!FileAccess::exists(assembly_path)) {
-		write_mono_log(".NET: Project assembly does not exist yet (" + assembly_name + ".dll). Safe skip.");
 		return false;
 	}
 
-	write_mono_log(".NET: Loading project assembly: " + assembly_path);
 	String loaded_assembly_path;
 	bool success = plugin_callbacks.LoadProjectAssemblyCallback(assembly_path.utf16().get_data(), &loaded_assembly_path);
 
 	if (success) {
 		project_assembly_path = loaded_assembly_path.simplify_path();
 		project_assembly_modified_time = FileAccess::get_modified_time(loaded_assembly_path);
-		write_mono_log(".NET: Project assembly loaded successfully!");
 	}
 	return success;
 }
@@ -614,19 +627,27 @@ GDMono::~GDMono() {
 	finalizing_scripts_domain = true;
 	if (hostfxr_dll_handle) {
 		OS::get_singleton()->close_dynamic_library(hostfxr_dll_handle);
-		hostfxr_dll_handle = nullptr;
 	}
 	if (coreclr_dll_handle) {
 		OS::get_singleton()->close_dynamic_library(coreclr_dll_handle);
-		coreclr_dll_handle = nullptr;
 	}
 	finalizing_scripts_domain = false;
 	runtime_initialized = false;
 	singleton = nullptr;
 }
 
-namespace mono_bind {
+namespace MonoBind {
+
 GodotSharp *GodotSharp::singleton = nullptr;
-GodotSharp::GodotSharp() { singleton = this; }
-GodotSharp::~GodotSharp() { singleton = nullptr; }
-} // namespace mono_bind
+
+void GodotSharp::reload_assemblies() {}
+
+GodotSharp::GodotSharp() {
+	singleton = this;
+}
+
+GodotSharp::~GodotSharp() {
+	singleton = nullptr;
+}
+
+} // namespace MonoBind
