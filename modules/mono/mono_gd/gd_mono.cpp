@@ -44,6 +44,8 @@ GDMono *GDMono::singleton = nullptr;
 
 namespace {
 
+static void *coreclr_dll_handle = nullptr;
+
 void write_mono_log(const String &p_msg) {
 	print_line(p_msg);
 #if defined(ANDROID_ENABLED)
@@ -397,7 +399,7 @@ godot_plugins_initialize_fn initialize_coreclr_and_godot_plugins(bool &r_runtime
 				(void **)&godot_plugins_initialize);
 	}
 #else
-	String assembly_name = Path::get_csharp_project_name();
+	String assembly_name = GodotSharpDirs::get_project_assembly_name();
 	int del_rc = coreclr_create_delegate(coreclr_handle, domain_id,
 			assembly_name.utf8().get_data(),
 			"GodotPlugins.Game.Main",
@@ -547,30 +549,13 @@ void GDMono::_init_godot_api_hashes() {
 #endif
 }
 
-#ifdef DEBUG_ENABLED
-uint64_t GDMono::get_api_core_hash() {
-	if (api_core_hash == 0) {
-		api_core_hash = ClassDB::get_api_hash(ClassDB::API_CORE);
-	}
-	return api_core_hash;
-}
-#ifdef TOOLS_ENABLED
-uint64_t GDMono::get_api_editor_hash() {
-	if (api_editor_hash == 0) {
-		api_editor_hash = ClassDB::get_api_hash(ClassDB::API_EDITOR);
-	}
-	return api_editor_hash;
-}
-#endif
-#endif
-
 #ifdef TOOLS_ENABLED
 bool GDMono::_load_project_assembly() {
 	if (!initialized) {
 		return false;
 	}
 
-	String assembly_name = Path::get_csharp_project_name();
+	String assembly_name = GodotSharpDirs::get_project_assembly_name();
 	String assembly_path = GodotSharpDirs::get_res_temp_assemblies_dir().path_join(assembly_name + ".dll");
 	assembly_path = ProjectSettings::get_singleton()->globalize_path(assembly_path);
 
@@ -615,9 +600,9 @@ GDMono::~GDMono() {
 	singleton = nullptr;
 }
 
-namespace MonoBind {
+namespace mono_bind {
 GodotSharp *GodotSharp::singleton = nullptr;
 void GodotSharp::reload_assemblies() {}
 GodotSharp::GodotSharp() { singleton = this; }
 GodotSharp::~GodotSharp() { singleton = nullptr; }
-} // namespace MonoBind
+} // namespace mono_bind
