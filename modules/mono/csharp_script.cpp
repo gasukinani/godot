@@ -5,28 +5,6 @@
 /*                             GODOT ENGINE                               */
 /*                        https://godotengine.org                         */
 /**************************************************************************/
-/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
-/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
-/*                                                                        */
-/* Permission is hereby granted, free of charge, to any person obtaining  */
-/* a copy of this software and associated documentation files (the        */
-/* "Software"), to deal in the Software without restriction, including    */
-/* without limitation the rights to use, copy, modify, merge, publish,    */
-/* distribute, sublicense, and/or sell copies of the Software, and to     */
-/* permit persons to whom the Software is furnished to do so, subject to  */
-/* the following conditions:                                              */
-/*                                                                        */
-/* The above copyright notice and this permission notice shall be         */
-/* included in all copies or substantial portions of the Software.        */
-/*                                                                        */
-/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
-/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
-/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
-/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
-/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
-/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
-/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
-/**************************************************************************/
 
 #include "csharp_script.h"
 
@@ -241,7 +219,6 @@ bool CSharpLanguage::is_using_templates() {
 }
 
 #ifdef TOOLS_ENABLED
-// Awtomatikong nililikha ang .csproj at .sln para maiwasan ang MSBuild exception crash
 static void _ensure_csharp_project_files_exist() {
 	if (!Engine::get_singleton()->is_editor_hint()) {
 		return;
@@ -259,7 +236,6 @@ static void _ensure_csharp_project_files_exist() {
 	String csproj_path = ProjectSettings::get_singleton()->globalize_path("res://" + project_name + ".csproj");
 	String sln_path = ProjectSettings::get_singleton()->globalize_path("res://" + project_name + ".sln");
 
-	// 1. Gumawa ng .csproj kung wala pa
 	if (!FileAccess::exists(csproj_path)) {
 		Ref<FileAccess> f = FileAccess::open(csproj_path, FileAccess::WRITE);
 		if (f.is_valid()) {
@@ -276,7 +252,6 @@ static void _ensure_csharp_project_files_exist() {
 		}
 	}
 
-	// 2. Gumawa ng .sln kung wala pa
 	if (!FileAccess::exists(sln_path)) {
 		Ref<FileAccess> f = FileAccess::open(sln_path, FileAccess::WRITE);
 		if (f.is_valid()) {
@@ -394,10 +369,7 @@ String CSharpLanguage::get_global_class_name(const String &p_path, String *r_bas
 		return class_name;
 	}
 
-	// =========================================================================
-	// CRASH FIX: Proteksyon laban sa nullptr dereference sa loob ng C# bridge!
-	// Gumamit ng dummy stack variables kapag nullptr ang ipinasa ng caller.
-	// =========================================================================
+	// CRASH FIX: Proteksyon sa nullptr dereference sa loob ng C# bridge
 	String base_type;
 	String icon_path;
 	bool is_abstract = false;
@@ -904,7 +876,6 @@ void CSharpLanguage::reload_assemblies() {
 #ifdef TOOLS_ENABLED
 Error CSharpLanguage::open_in_external_editor(const Ref<Script> &p_script, int p_line, int p_col) {
 #if defined(ANDROID_ENABLED)
-	// Sa Android, huwag mag-launch ng external desktop IDE para maiwasan ang process crash
 	return ERR_UNAVAILABLE;
 #else
 	if (!get_godotsharp_editor()) {
@@ -916,7 +887,6 @@ Error CSharpLanguage::open_in_external_editor(const Ref<Script> &p_script, int p
 
 bool CSharpLanguage::overrides_external_editor() {
 #if defined(ANDROID_ENABLED)
-	// Buksan ang .cs script diretso sa built-in code editor ng Godot sa Android!
 	return false;
 #else
 	if (!get_godotsharp_editor()) {
@@ -952,8 +922,6 @@ bool CSharpLanguage::debug_break(const String &p_error, bool p_allow_continue) {
 #ifdef TOOLS_ENABLED
 void CSharpLanguage::_editor_init_callback() {
 #if defined(ANDROID_ENABLED)
-	// CRASH FIX: Sa Android, i-skip ang GodotTools.dll dahil naghahanap ito ng
-	// desktop Microsoft.Build.dll na nagdudulot ng crash kapag nag-create ng script.
 	print_verbose(".NET: Skipping GodotTools plugin on Android to prevent MSBuild crash.");
 	return;
 #else
@@ -1993,7 +1961,8 @@ bool CSharpScript::can_instantiate() const {
 	bool extra_cond = true;
 #endif
 
-	if (!valid) {
+	// Safe Guard: Huwag mag-ERR_FAIL kapag bagong gawa ang script at wala pang assembly
+	if (!valid || !GDMonoCache::godot_api_cache_updated) {
 		return false;
 	}
 
@@ -2116,6 +2085,7 @@ PlaceHolderScriptInstance *CSharpScript::placeholder_instance_create(Object *p_t
 #ifdef TOOLS_ENABLED
 	PlaceHolderScriptInstance *si = memnew(PlaceHolderScriptInstance(CSharpLanguage::get_singleton(), Ref<Script>(this), p_this));
 	placeholders.insert(si);
+	// Safe Guard: I-update lamang ang exports kung compiled/valid na ang klase sa assembly
 	if (valid) {
 		_update_exports(si);
 	}
@@ -2229,6 +2199,9 @@ Error CSharpScript::reload(bool p_keep_state) {
 	reload_invalidated = false;
 	String script_path = get_path();
 
+	// CRITICAL CRASH FIX: Kapag hindi pa updated o nag-fail ang GodotPlugins,
+	// huwag kailanman tatawag sa ScriptManagerBridge_AddScriptBridge (na isang nullptr)
+	// upang hindi mag-SIGSEGV crash ang Godot kapag nag-click ng Create Script!
 	if (!GDMonoCache::godot_api_cache_updated || !GDMonoCache::managed_callbacks.ScriptManagerBridge_AddScriptBridge) {
 		valid = false;
 		return OK;
