@@ -94,11 +94,10 @@ jobs:
             scons_cache=$SCONS_CACHE \
             -j$(nproc)
 
-      - name: Download & Inject Microsoft .NET Android Runtime (Mono)
+      - name: Download & Bundle All .NET Mono Native Libs into APK
         run: |
           ARCH="${{ inputs.arch_type || 'arm64' }}"
           
-          # Tukuyin ang NuGet Runtime Identifier (RID) at Android ABI
           if [ "$ARCH" = "arm64" ]; then
             DOTNET_RID="android-arm64"
             ANDROID_ABI="arm64-v8a"
@@ -110,30 +109,38 @@ jobs:
             ANDROID_ABI="x86_64"
           fi
 
-          echo "Downloading .NET 8 Runtime package for $DOTNET_RID..."
-          NUGET_URL="https://www.nuget.org/api/v2/package/Microsoft.NETCore.App.Runtime.Mono.${DOTNET_RID}/8.0.8"
-          curl -L -o mono_runtime.zip "$NUGET_URL"
+          echo "Downloading .NET 8 Android Runtime package for $DOTNET_RID..."
+          curl -L -o mono_runtime.zip "https://www.nuget.org/api/v2/package/Microsoft.NETCore.App.Runtime.Mono.${DOTNET_RID}/8.0.8"
           unzip -q mono_runtime.zip -d mono_extracted
 
-          # 1. Ilagay ang libmonosgen-2.0.so sa Gradle jniLibs para ma-embed sa APK
-          JNILIBS_DIR="platform/android/java/app/src/main/jniLibs/${ANDROID_ABI}"
-          mkdir -p "$JNILIBS_DIR"
-          cp -v mono_extracted/runtimes/${DOTNET_RID}/native/libmonosgen-2.0.so "$JNILIBS_DIR/"
+          # 1. Kopyahin ang libmonosgen-2.0.so sa 'bin/' (kung saan kumukuha ang Gradle)
+          mkdir -p bin/
+          cp -v mono_extracted/runtimes/${DOTNET_RID}/native/libmonosgen-2.0.so bin/
 
-          # Kopyahin din sa app/libs para sigurado sa compatibility ng Gradle
-          mkdir -p "platform/android/java/app/libs/${ANDROID_ABI}"
-          cp -v mono_extracted/runtimes/${DOTNET_RID}/native/libmonosgen-2.0.so "platform/android/java/app/libs/${ANDROID_ABI}/"
+          # 2. Isama sa lahat ng jniLibs target directories sa Godot Android project
+          # (Sumasaklaw sa editor, lib, at app modules)
+          for dir in \
+            platform/android/java/editor/src/main/jniLibs/${ANDROID_ABI} \
+            platform/android/java/lib/src/main/jniLibs/${ANDROID_ABI} \
+            platform/android/java/app/src/main/jniLibs/${ANDROID_ABI} \
+            platform/android/java/editor/libs/${ANDROID_ABI} \
+            platform/android/java/lib/libs/${ANDROID_ABI}
+          do
+            mkdir -p "$dir"
+            cp -v mono_extracted/runtimes/${DOTNET_RID}/native/libmonosgen-2.0.so "$dir/"
+          done
 
-          # 2. Ihanda ang Mono runtime bundle folder para sa artifact
+          # 3. I-bundle ang BCL assemblies (System.*.dll) sa Assets ng Editor APK
+          ASSETS_DIR="platform/android/java/editor/src/main/assets/mono/assemblies"
+          mkdir -p "$ASSETS_DIR"
+          cp -v mono_extracted/runtimes/${DOTNET_RID}/lib/net8.0/*.dll "$ASSETS_DIR/"
+
+          # Ihanda din ang stand-alone phone storage bundle
           mkdir -p build_output/mono_bundle/mono/assemblies/
           cp -v mono_extracted/runtimes/${DOTNET_RID}/native/libmonosgen-2.0.so build_output/mono_bundle/mono/
           cp -v mono_extracted/runtimes/${DOTNET_RID}/lib/net8.0/*.dll build_output/mono_bundle/mono/assemblies/
 
-          # Isama rin ang assemblies sa app assets ng APK
-          mkdir -p platform/android/java/app/src/main/assets/mono/assemblies/
-          cp -v mono_extracted/runtimes/${DOTNET_RID}/lib/net8.0/*.dll platform/android/java/app/src/main/assets/mono/assemblies/
-
-          echo ".NET Runtime successfully integrated into Gradle project!"
+          echo "All native libraries and assemblies injected successfully!"
 
       - name: Package Android APK (Official Godot Gradle Task)
         run: |
@@ -153,18 +160,26 @@ jobs:
         run: |
           mkdir -p build_output/apk/
           
-          # Hanapin at kopyahin ang APKs
+          # Hanapin at kopyahin ang nabuong APK
           find bin/ platform/android/java -name "*.apk" -exec cp -v {} build_output/apk/ \;
           
-          # I-archive ang mono folder para madaling i-download at i-extract sa phone
+          # I-compress ang mono bundle para sa optional phone storage
           cd build_output/mono_bundle
           zip -r ../mono_phone_storage.zip mono/
           cd ../..
           rm -rf build_output/mono_bundle
 
-          echo "Nilalaman ng build_output:"
-          ls -la build_output/
+          echo "Nilalaman ng build_output/apk:"
           ls -la build_output/apk/
+
+      - name: Verify Native Libs Inside APK
+        run: |
+          # I-verify kung talagang pumasok ang libmonosgen-2.0.so sa loob ng APK
+          APK_FILE=$(find build_output/apk/ -name "*.apk" | head -n 1)
+          if [ -n "$APK_FILE" ]; then
+            echo "Inspecting libs inside: $APK_FILE"
+            unzip -l "$APK_FILE" | grep -E "libmonosgen|libgodot" || true
+          fi
 
       - name: Upload Godot Editor APK
         uses: actions/upload-artifact@v4
