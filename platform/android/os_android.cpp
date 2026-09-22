@@ -67,18 +67,12 @@
 const char *OS_Android::ANDROID_EXEC_PATH = "apk";
 
 String _remove_symlink(const String &dir) {
-	// Workaround for Android 6.0+ using a symlink.
-	// Save the current directory.
 	char current_dir_name[2048];
 	getcwd(current_dir_name, 2048);
-	// Change directory to the external data directory.
 	chdir(dir.utf8().get_data());
-	// Get the actual directory without the potential symlink.
 	char dir_name_without_symlink[2048];
 	getcwd(dir_name_without_symlink, 2048);
-	// Convert back to a String.
 	String dir_without_symlink(dir_name_without_symlink);
-	// Restore original current directory.
 	chdir(current_dir_name);
 	return dir_without_symlink;
 }
@@ -143,8 +137,6 @@ void OS_Android::initialize() {
 
 void OS_Android::initialize_joypads() {
 	Input::get_singleton()->set_fallback_mapping(godot_java->get_input_fallback_mapping());
-
-	// This queries/updates the currently connected devices/joypads.
 	godot_java->init_input_devices();
 }
 
@@ -198,8 +190,17 @@ bool OS_Android::copy_dynamic_library(const String &p_library_path, const String
 
 	String copy_path = p_target_dir.path_join(p_library_path.get_file());
 	bool copy_exists = FileAccess::exists(copy_path);
+
+	// Kung existing na at pareho o mas bago ang cache, gamitin agad nang hindi nagre-recopy
 	if (copy_exists) {
-		print_verbose("Deleting existing library copy " + copy_path);
+		if (FileAccess::get_modified_time(copy_path) >= FileAccess::get_modified_time(p_library_path)) {
+			if (r_copy_path != nullptr) {
+				*r_copy_path = copy_path;
+			}
+			return true;
+		}
+
+		print_verbose("Deleting outdated library copy " + copy_path);
 		if (da_ref->remove(copy_path) != OK) {
 			print_verbose("Unable to delete " + copy_path);
 		}
@@ -226,18 +227,18 @@ Error OS_Android::open_dynamic_library(const String &p_path, void *&p_library_ha
 		so_file_exists = false;
 	}
 
+	// Subukang buksan muna gamit ang dlopen
 	p_library_handle = dlopen(path.utf8().get_data(), RTLD_NOW);
+
+	// Kapag nag-fail ang dlopen (halimbawa dahil nasa /storage/emulated/0/ na may noexec flag):
 	if (!p_library_handle && so_file_exists) {
-		// The library (and its dependencies) may be on the sdcard and thus inaccessible.
-		// Try to copy to the internal directory for access.
 		const String dynamic_library_path = get_dynamic_libraries_path();
 
 		if (p_data != nullptr && p_data->library_dependencies != nullptr && !p_data->library_dependencies->is_empty()) {
-			// Copy the library dependencies
 			print_verbose("Copying library dependencies..");
 			for (const String &library_dependency_path : *p_data->library_dependencies) {
 				String internal_library_dependency_path;
-				if (!copy_dynamic_library(library_dependency_path, dynamic_library_path.path_join(library_dependency_path.get_base_dir()), &internal_library_dependency_path)) {
+				if (!copy_dynamic_library(library_dependency_path, dynamic_library_path, &internal_library_dependency_path)) {
 					ERR_PRINT(vformat("Unable to copy library dependency %s", library_dependency_path));
 				} else {
 					void *lib_dependency_handle = dlopen(internal_library_dependency_path.utf8().get_data(), RTLD_NOW);
@@ -249,11 +250,13 @@ Error OS_Android::open_dynamic_library(const String &p_path, void *&p_library_ha
 		}
 
 		String internal_path;
-		print_verbose("Copying library " + p_path);
-		const bool internal_so_file_exists = copy_dynamic_library(p_path, dynamic_library_path.path_join(p_path.get_base_dir()), &internal_path);
+		print_verbose("Copying library to internal cache: " + p_path);
+
+		// Siguraduhing sa dynamic_library_path diretso pupunta ang library file
+		const bool internal_so_file_exists = copy_dynamic_library(p_path, dynamic_library_path, &internal_path);
 
 		if (internal_so_file_exists) {
-			print_verbose("Opening library " + internal_path);
+			print_verbose("Opening copied library from internal path: " + internal_path);
 			p_library_handle = dlopen(internal_path.utf8().get_data(), RTLD_NOW);
 			if (p_library_handle) {
 				path = internal_path;
@@ -286,7 +289,7 @@ String OS_Android::get_system_property(const char *key) const {
 String OS_Android::get_distribution_name() const {
 	if (!get_system_property("ro.havoc.version").is_empty()) {
 		return "Havoc OS";
-	} else if (!get_system_property("org.pex.version").is_empty()) { // Putting before "Pixel Experience", because it's derivating from it.
+	} else if (!get_system_property("org.pex.version").is_empty()) {
 		return "Pixel Extended";
 	} else if (!get_system_property("org.pixelexperience.version").is_empty()) {
 		return "Pixel Experience";
@@ -306,15 +309,14 @@ String OS_Android::get_distribution_name() const {
 		return "Syberia Project";
 	} else if (!get_system_property("ro.arrow.version").is_empty()) {
 		return "ArrowOS";
-	} else if (!get_system_property("ro.lineage.version").is_empty()) { // Putting LineageOS last, just in case any derivative writes to "ro.lineage.version".
+	} else if (!get_system_property("ro.lineage.version").is_empty()) {
 		return "LineageOS";
 	}
 
-	if (!get_system_property("ro.modversion").is_empty()) { // Handles other Android custom ROMs.
+	if (!get_system_property("ro.modversion").is_empty()) {
 		return vformat("%s %s", get_name(), "Custom ROM");
 	}
 
-	// Handles stock Android.
 	return get_name();
 }
 
@@ -329,12 +331,11 @@ String OS_Android::get_version() const {
 		}
 	}
 
-	String mod_version = get_system_property("ro.modversion"); // Handles other Android custom ROMs.
+	String mod_version = get_system_property("ro.modversion");
 	if (!mod_version.is_empty()) {
 		return mod_version;
 	}
 
-	// Handles stock Android.
 	String sdk_version = get_system_property("ro.build.version.sdk");
 	String build = get_system_property("ro.build.version.incremental");
 	if (!sdk_version.is_empty()) {
@@ -449,7 +450,6 @@ void OS_Android::main_loop_focusout() {
 	}
 
 	if (dsa) {
-		// Only pause when we are not in PiP mode.
 		audio_driver_android.set_pause(!dsa->is_in_pip_mode());
 	}
 }
@@ -474,7 +474,7 @@ String OS_Android::get_resource_dir() const {
 	return OS_Unix::get_resource_dir();
 #else
 	if (remote_fs_dir.is_empty()) {
-		return "/"; // Android has its own filesystem for resources inside the APK
+		return "/";
 	} else {
 		return remote_fs_dir;
 	}
@@ -546,7 +546,6 @@ void OS_Android::_load_system_font_config() const {
 					for (int i = 0; i < lang_codes.size(); i++) {
 						Vector<String> lang_code_elements = lang_codes[i].split("-");
 						if (lang_code_elements.size() >= 1 && lang_code_elements[0] != "und") {
-							// Add missing script codes.
 							if (lang_code_elements[0] == "ko") {
 								fi.script.insert("Hani");
 								fi.script.insert("Hang");
@@ -561,7 +560,6 @@ void OS_Android::_load_system_font_config() const {
 							}
 						}
 						if (lang_code_elements.size() >= 2) {
-							// Add common codes for variants and remove variants not supported by HarfBuzz/ICU.
 							if (lang_code_elements[1] == "Aran") {
 								fi.script.insert("Arab");
 							}
@@ -691,7 +689,7 @@ Vector<String> OS_Android::get_system_font_path_for_text(const String &p_font_na
 			}
 		}
 		if (score >= 490) {
-			break; // Perfect match.
+			break;
 		}
 	}
 
@@ -726,7 +724,7 @@ String OS_Android::get_system_font_path(const String &p_font_name, int p_weight,
 			best_match = E;
 		}
 		if (score >= 140) {
-			break; // Perfect match.
+			break;
 		}
 	}
 	if (best_match) {
@@ -736,10 +734,6 @@ String OS_Android::get_system_font_path(const String &p_font_name, int p_weight,
 }
 
 String OS_Android::get_executable_path() const {
-	// Since unix process creation is restricted on Android, we bypass
-	// OS_Unix::get_executable_path() so we can return ANDROID_EXEC_PATH.
-	// Detection of ANDROID_EXEC_PATH allows to handle process creation in an Android compliant
-	// manner.
 	return OS::get_executable_path();
 }
 
@@ -805,15 +799,11 @@ Error OS_Android::move_to_trash(const String &p_path) {
 		return FAILED;
 	}
 
-	// Check if it's a directory
 	if (da_ref->dir_exists(p_path)) {
 		RETURN_IF_ERROR(da_ref->change_dir(p_path));
-		// This is directory, let's erase its contents
 		RETURN_IF_ERROR(da_ref->erase_contents_recursive());
-		// Remove the top directory
 		return da_ref->remove(p_path);
 	} else if (da_ref->file_exists(p_path)) {
-		// This is a file, let's remove it.
 		return da_ref->remove(p_path);
 	} else {
 		return FAILED;
@@ -899,6 +889,14 @@ bool OS_Android::_check_internal_feature_support(const String &p_feature) {
 	if (p_feature == "mobile") {
 		return true;
 	}
+
+	// Suporta sa "dotnet" feature flag kapag may mono directory sa Android
+	if (p_feature == "dotnet") {
+		if (DirAccess::exists("/storage/emulated/0/mono") || DirAccess::exists("/sdcard/mono")) {
+			return true;
+		}
+	}
+
 #if defined(__aarch64__)
 	if (p_feature == "arm64-v8a" || p_feature == "arm64") {
 		return true;
