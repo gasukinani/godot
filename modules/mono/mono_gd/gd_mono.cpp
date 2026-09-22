@@ -554,7 +554,6 @@ godot_plugins_initialize_fn initialize_coreclr_and_godot_plugins(bool &r_runtime
 			&coreclr_handle,
 			&domain_id);
 
-	// FIX: Sa MonoVM, rc == 0 (S_OK) ang tanging sukatan ng tagumpay.
 	if (rc != 0) {
 		ERR_PRINT(vformat(".NET: Failed to initialize CoreCLR/Mono runtime. Error code (HRESULT): 0x%X", (unsigned int)rc));
 		return nullptr;
@@ -648,8 +647,6 @@ void GDMono::initialize() {
 #endif
 
 #if defined(ANDROID_ENABLED)
-	// ANDROID FIX: Sa Android, libmonosgen-2.0.so (MonoVM) ang unang gamitin
-	// upang maiwasan ang "libdl.so.2 not found" error mula sa desktop libhostfxr.so
 	if (load_coreclr(coreclr_dll_handle)) {
 		godot_plugins_initialize = initialize_coreclr_and_godot_plugins(runtime_initialized);
 	}
@@ -678,7 +675,17 @@ void GDMono::initialize() {
 	GDMonoCache::ManagedCallbacks managed_callbacks{};
 	void *godot_dll_handle = nullptr;
 
-#if defined(UNIX_ENABLED) && !defined(MACOS_ENABLED) && !defined(APPLE_EMBEDDED_ENABLED)
+	// CRITICAL ANDROID FIX: Sa Android, kailangan ang totoong handle ng libgodot_android.so
+	// gamit ang dladdr, dahil ang dlopen(nullptr) ay nagbabalik ng Android Zygote (/system/bin/app_process64).
+#if defined(ANDROID_ENABLED)
+	Dl_info dl_info;
+	if (dladdr((void *)&GDMono::initialize, &dl_info) && dl_info.dli_fname) {
+		godot_dll_handle = dlopen(dl_info.dli_fname, RTLD_NOW);
+	}
+	if (!godot_dll_handle) {
+		godot_dll_handle = dlopen("libgodot_android.so", RTLD_NOW);
+	}
+#elif defined(UNIX_ENABLED) && !defined(MACOS_ENABLED) && !defined(APPLE_EMBEDDED_ENABLED)
 	godot_dll_handle = dlopen(nullptr, RTLD_NOW);
 #endif
 
