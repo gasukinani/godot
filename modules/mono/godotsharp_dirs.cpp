@@ -5,28 +5,6 @@
 /*                             GODOT ENGINE                               */
 /*                        https://godotengine.org                         */
 /**************************************************************************/
-/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
-/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
-/*                                                                        */
-/* Permission is hereby granted, free of charge, to any person obtaining  */
-/* a copy of this software and associated documentation files (the        */
-/* "Software"), to deal in the Software without restriction, including    */
-/* without limitation the rights to use, copy, modify, merge, publish,    */
-/* distribute, sublicense, and/or sell copies of the Software, and to     */
-/* permit persons to whom the Software is furnished to do so, subject to  */
-/* the following conditions:                                              */
-/*                                                                        */
-/* The above copyright notice and this permission notice shall be         */
-/* included in all copies or substantial portions of the Software.        */
-/*                                                                        */
-/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
-/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
-/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
-/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
-/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
-/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
-/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
-/**************************************************************************/
 
 #include "godotsharp_dirs.h"
 
@@ -57,38 +35,35 @@ String _get_expected_build_config() {
 #ifdef TOOLS_ENABLED
 	return "Debug";
 #else
-
 #ifdef DEBUG_ENABLED
 	return "ExportDebug";
 #else
 	return "ExportRelease";
 #endif
-
 #endif
 }
 
 String _get_mono_user_dir() {
-#ifdef TOOLS_ENABLED
+#if defined(ANDROID_ENABLED)
+	// Sa Android, gamitin palagi ang internal app data directory para ligtas sa permissions
+	return OS::get_singleton()->get_user_data_dir().path_join("mono");
+#elif defined(TOOLS_ENABLED)
 	if (EditorPaths::get_singleton()) {
 		return EditorPaths::get_singleton()->get_data_dir().path_join("mono");
 	} else {
 		String settings_path = OS::get_singleton()->get_data_path().path_join(OS::get_singleton()->get_godot_dir_name());
 
-		// Self-contained mode if a `._sc_` or `_sc_` file is present in executable dir.
 		String exe_dir = OS::get_singleton()->get_executable_path().get_base_dir();
 		Ref<DirAccess> d = DirAccess::create_for_path(exe_dir);
-		if (d->file_exists("._sc_") || d->file_exists("_sc_")) {
-			// contain yourself
+		// Safe Guard: I-check kung valid bago gamitin para maiwasan ang SIGSEGV
+		if (d.is_valid() && (d->file_exists("._sc_") || d->file_exists("_sc_"))) {
 			settings_path = exe_dir.path_join("editor_data");
 		}
 
-		// On macOS, look outside .app bundle, since .app bundle is read-only.
-		// Note: This will not work if Gatekeeper path randomization is active.
 		if (OS::get_singleton()->has_feature("macos") && exe_dir.ends_with("MacOS") && exe_dir.path_join("..").simplify_path().ends_with("Contents")) {
 			exe_dir = exe_dir.path_join("../../..").simplify_path();
 			d = DirAccess::create_for_path(exe_dir);
-			if (d->file_exists("._sc_") || d->file_exists("_sc_")) {
-				// contain yourself
+			if (d.is_valid() && (d->file_exists("._sc_") || d->file_exists("_sc_"))) {
 				settings_path = exe_dir.path_join("editor_data");
 			}
 		}
@@ -101,7 +76,6 @@ String _get_mono_user_dir() {
 }
 
 #if !TOOLS_ENABLED
-// This should be the equivalent of GodotTools.Utils.OS.PlatformNameMap.
 static const char *platform_name_map[][2] = {
 	{ "Windows", "windows" },
 	{ "macOS", "macos" },
@@ -117,7 +91,6 @@ static const char *platform_name_map[][2] = {
 
 String _get_platform_name() {
 	String platform_name = OS::get_singleton()->get_name();
-
 	int idx = 0;
 	while (platform_name_map[idx][0] != nullptr) {
 		if (platform_name_map[idx][0] == platform_name) {
@@ -125,7 +98,6 @@ String _get_platform_name() {
 		}
 		idx++;
 	}
-
 	return "";
 }
 #endif
@@ -146,8 +118,6 @@ private:
 	_GodotSharpDirs() {
 		String res_data_dir = ProjectSettings::get_singleton()->get_project_data_path().path_join("mono");
 		res_metadata_dir = res_data_dir.path_join("metadata");
-
-		// TODO use paths from csproj
 		res_temp_assemblies_dir = res_data_dir.path_join("temp").path_join("bin").path_join(_get_expected_build_config());
 
 #ifdef WEB_ENABLED
@@ -165,8 +135,13 @@ private:
 		String data_dir_root = exe_dir.path_join("GodotSharp");
 
 #if defined(ANDROID_ENABLED)
-		// I-check kung may GodotSharp folder sa external storage (/storage/emulated/0/mono)
-		if (DirAccess::exists("/storage/emulated/0/mono/GodotSharp")) {
+		// I-check sa parehong internal at external storage
+		String internal_mono_dir = OS::get_singleton()->get_user_data_dir().path_join("mono");
+		if (DirAccess::exists(internal_mono_dir.path_join("GodotSharp"))) {
+			data_dir_root = internal_mono_dir.path_join("GodotSharp");
+		} else if (DirAccess::exists(internal_mono_dir)) {
+			data_dir_root = internal_mono_dir;
+		} else if (DirAccess::exists("/storage/emulated/0/mono/GodotSharp")) {
 			data_dir_root = "/storage/emulated/0/mono/GodotSharp";
 		} else if (DirAccess::exists("/storage/emulated/0/mono")) {
 			data_dir_root = "/storage/emulated/0/mono";
@@ -187,18 +162,33 @@ private:
 #endif
 
 #if defined(ANDROID_ENABLED)
-		// Suporta sa flexible folder structure sa Android (Debug subfolder man o flat)
-		if (!DirAccess::exists(data_editor_tools_dir) && DirAccess::exists("/storage/emulated/0/mono/Tools")) {
-			data_editor_tools_dir = "/storage/emulated/0/mono/Tools";
+		// Suporta sa flexible folder structures sa Android
+		if (!DirAccess::exists(data_editor_tools_dir)) {
+			if (DirAccess::exists(internal_mono_dir.path_join("Tools"))) {
+				data_editor_tools_dir = internal_mono_dir.path_join("Tools");
+			} else if (DirAccess::exists("/storage/emulated/0/mono/Tools")) {
+				data_editor_tools_dir = "/storage/emulated/0/mono/Tools";
+			}
 		}
-		if (!DirAccess::exists(api_assemblies_base_dir) && DirAccess::exists("/storage/emulated/0/mono/Api")) {
-			api_assemblies_base_dir = "/storage/emulated/0/mono/Api";
+
+		if (!DirAccess::exists(api_assemblies_base_dir)) {
+			if (DirAccess::exists(internal_mono_dir.path_join("Api"))) {
+				api_assemblies_base_dir = internal_mono_dir.path_join("Api");
+			} else if (DirAccess::exists("/storage/emulated/0/mono/Api")) {
+				api_assemblies_base_dir = "/storage/emulated/0/mono/Api";
+			}
 		}
 
 		if (DirAccess::exists(api_assemblies_base_dir.path_join(GDMono::get_expected_api_build_config()))) {
 			api_assemblies_dir = api_assemblies_base_dir.path_join(GDMono::get_expected_api_build_config());
 		} else if (DirAccess::exists(api_assemblies_base_dir)) {
 			api_assemblies_dir = api_assemblies_base_dir;
+		} else if (DirAccess::exists(internal_mono_dir.path_join("assemblies"))) {
+			api_assemblies_dir = internal_mono_dir.path_join("assemblies");
+		} else if (DirAccess::exists(internal_mono_dir)) {
+			api_assemblies_dir = internal_mono_dir;
+		} else if (DirAccess::exists("/storage/emulated/0/mono/assemblies")) {
+			api_assemblies_dir = "/storage/emulated/0/mono/assemblies";
 		} else if (DirAccess::exists("/storage/emulated/0/mono")) {
 			api_assemblies_dir = "/storage/emulated/0/mono";
 		} else {
@@ -208,15 +198,19 @@ private:
 		api_assemblies_dir = api_assemblies_base_dir.path_join(GDMono::get_expected_api_build_config());
 #endif
 
-#else // TOOLS_ENABLED
+#else // !TOOLS_ENABLED
 		String platform = _get_platform_name();
 		String arch = Engine::get_singleton()->get_architecture_name();
 		String appname_safe = Path::get_csharp_project_name();
 		String packed_path = "res://.godot/mono/publish/" + arch;
 
 #ifdef ANDROID_ENABLED
-		// Unahin ang external storage para sa assemblies kung mayroon man
-		if (DirAccess::exists("/storage/emulated/0/mono/assemblies")) {
+		String internal_mono_dir = OS::get_singleton()->get_user_data_dir().path_join("mono");
+		if (DirAccess::exists(internal_mono_dir.path_join("assemblies"))) {
+			api_assemblies_dir = internal_mono_dir.path_join("assemblies");
+		} else if (DirAccess::exists(internal_mono_dir)) {
+			api_assemblies_dir = internal_mono_dir;
+		} else if (DirAccess::exists("/storage/emulated/0/mono/assemblies")) {
 			api_assemblies_dir = "/storage/emulated/0/mono/assemblies";
 		} else if (DirAccess::exists("/storage/emulated/0/mono")) {
 			api_assemblies_dir = "/storage/emulated/0/mono";
@@ -226,11 +220,9 @@ private:
 		print_verbose(".NET: Android platform detected. Setting api_assemblies_dir to: " + api_assemblies_dir);
 #else
 		if (DirAccess::exists(packed_path)) {
-			// The dotnet publish data is packed in the pck/zip.
 			String data_dir_root = OS::get_singleton()->get_cache_path().path_join("data_" + appname_safe + "_" + platform + "_" + arch);
 			bool has_data = false;
 			if (!has_data) {
-				// 1. Try to access the data directly.
 				String global_packed = ProjectSettings::get_singleton()->globalize_path(packed_path);
 				if (global_packed.is_absolute_path() && FileAccess::exists(global_packed.path_join(".dotnet-publish-manifest"))) {
 					data_dir_root = global_packed;
@@ -238,7 +230,6 @@ private:
 				}
 			}
 			if (!has_data) {
-				// 2. Check if the data was extracted before and is up-to-date.
 				String packed_manifest = packed_path.path_join(".dotnet-publish-manifest");
 				String extracted_manifest = data_dir_root.path_join(".dotnet-publish-manifest");
 				if (FileAccess::exists(packed_manifest) && FileAccess::exists(extracted_manifest)) {
@@ -248,7 +239,6 @@ private:
 				}
 			}
 			if (!has_data) {
-				// 3. Extract the data to a temporary location to load from there, delete old data if it exists but is not up-to-date.
 				Ref<DirAccess> da;
 				if (DirAccess::exists(data_dir_root)) {
 					da = DirAccess::open(data_dir_root);
@@ -261,7 +251,6 @@ private:
 			}
 			api_assemblies_dir = data_dir_root;
 		} else {
-			// The dotnet publish data is in a directory next to the executable.
 			String data_dir_root = exe_dir.path_join("data_" + appname_safe + "_" + platform + "_" + arch);
 #ifdef MACOS_ENABLED
 			if (!DirAccess::exists(data_dir_root)) {
