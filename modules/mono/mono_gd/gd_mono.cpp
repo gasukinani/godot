@@ -554,8 +554,7 @@ godot_plugins_initialize_fn initialize_coreclr_and_godot_plugins(bool &r_runtime
 			&coreclr_handle,
 			&domain_id);
 
-	// CRITICAL FIX: Sa MonoVM, rc == 0 (S_OK) ang tanging batayan ng success.
-	// Hindi dapat i-require na non-null ang coreclr_handle dahil 0x0 ito sa Mono.
+	// FIX: Sa MonoVM, rc == 0 (S_OK) ang tanging sukatan ng tagumpay.
 	if (rc != 0) {
 		ERR_PRINT(vformat(".NET: Failed to initialize CoreCLR/Mono runtime. Error code (HRESULT): 0x%X", (unsigned int)rc));
 		return nullptr;
@@ -649,6 +648,8 @@ void GDMono::initialize() {
 #endif
 
 #if defined(ANDROID_ENABLED)
+	// ANDROID FIX: Sa Android, libmonosgen-2.0.so (MonoVM) ang unang gamitin
+	// upang maiwasan ang "libdl.so.2 not found" error mula sa desktop libhostfxr.so
 	if (load_coreclr(coreclr_dll_handle)) {
 		godot_plugins_initialize = initialize_coreclr_and_godot_plugins(runtime_initialized);
 	}
