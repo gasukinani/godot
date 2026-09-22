@@ -96,6 +96,10 @@ bool get_latest_fxr(const String &fxr_root, String &r_fxr_path) {
 	String latest_ver_str;
 
 	Ref<DirAccess> da = DirAccess::open(fxr_root);
+	if (da.is_null()) {
+		return false;
+	}
+
 	da->list_dir_begin();
 	for (String dir = da->get_next(); !dir.is_empty(); dir = da->get_next()) {
 		if (!da->current_is_dir() || dir == "." || dir == "..") {
@@ -200,6 +204,17 @@ bool get_default_installation_dir(String &r_dotnet_root) {
 	}
 #endif
 
+	return true;
+#elif defined(ANDROID_ENABLED)
+	// Android default search path
+	if (DirAccess::exists("/storage/emulated/0/mono")) {
+		r_dotnet_root = "/storage/emulated/0/mono";
+		return true;
+	} else if (DirAccess::exists("/sdcard/mono")) {
+		r_dotnet_root = "/sdcard/mono";
+		return true;
+	}
+	r_dotnet_root = "/storage/emulated/0/mono";
 	return true;
 #else
 	r_dotnet_root = "/usr/share/dotnet";
@@ -312,6 +327,14 @@ bool get_dotnet_root_from_env(String &r_dotnet_root) {
 } //namespace
 
 bool godotsharp::hostfxr_resolver::try_get_path_from_dotnet_root(const String &p_dotnet_root, String &r_fxr_path) {
+	// 1. Tignan kung direktang nasa loob ng dotnet root ang hostfxr library
+	String direct_fxr = Path::join(p_dotnet_root, get_hostfxr_file_name());
+	if (FileAccess::exists(direct_fxr)) {
+		r_fxr_path = direct_fxr;
+		return true;
+	}
+
+	// 2. Standard .NET layout: <dotnet_root>/host/fxr/<version>/libhostfxr.so
 	String fxr_dir = Path::join(p_dotnet_root, "host", "fxr");
 	if (!DirAccess::exists(fxr_dir)) {
 		if (OS::get_singleton()->is_stdout_verbose()) {
@@ -323,6 +346,25 @@ bool godotsharp::hostfxr_resolver::try_get_path_from_dotnet_root(const String &p
 }
 
 bool godotsharp::hostfxr_resolver::try_get_path(String &r_dotnet_root, String &r_fxr_path) {
+#if defined(ANDROID_ENABLED)
+	// Unahin i-check ang external storage paths sa Android
+	static const char *android_search_dirs[] = {
+		"/storage/emulated/0/mono",
+		"/sdcard/mono",
+		nullptr
+	};
+
+	for (int i = 0; android_search_dirs[i] != nullptr; i++) {
+		String search_dir = android_search_dirs[i];
+		if (DirAccess::exists(search_dir)) {
+			if (try_get_path_from_dotnet_root(search_dir, r_fxr_path)) {
+				r_dotnet_root = search_dir;
+				return true;
+			}
+		}
+	}
+#endif
+
 	if (!get_dotnet_root_from_env(r_dotnet_root) &&
 			!get_dotnet_self_registered_dir(r_dotnet_root) &&
 			!get_default_installation_dir(r_dotnet_root)) {
