@@ -107,7 +107,6 @@ void CSharpLanguage::init() {
 		gdmono->initialize();
 	}
 
-	// Safe Guard: Kung hindi na-initialize nang buo, i-deregister para hindi mag-crash ang editor
 	if (!gdmono->is_runtime_initialized()) {
 		WARN_PRINT(".NET: Runtime initialization incomplete. Safely unregistering C# to prevent editor crash.");
 		ScriptServer::unregister_language(this);
@@ -237,7 +236,6 @@ static void _ensure_csharp_project_files_exist() {
 	String csproj_path = ProjectSettings::get_singleton()->globalize_path("res://" + project_name + ".csproj");
 	String sln_path = ProjectSettings::get_singleton()->globalize_path("res://" + project_name + ".sln");
 
-	// 1. Gumawa ng .csproj kung wala pa
 	if (!FileAccess::exists(csproj_path)) {
 		Ref<FileAccess> f = FileAccess::open(csproj_path, FileAccess::WRITE);
 		if (f.is_valid()) {
@@ -254,7 +252,6 @@ static void _ensure_csharp_project_files_exist() {
 		}
 	}
 
-	// 2. Gumawa ng .sln kung wala pa
 	if (!FileAccess::exists(sln_path)) {
 		Ref<FileAccess> f = FileAccess::open(sln_path, FileAccess::WRITE);
 		if (f.is_valid()) {
@@ -371,7 +368,24 @@ String CSharpLanguage::get_global_class_name(const String &p_path, String *r_bas
 	if (!gdmono || !gdmono->is_runtime_initialized() || !GDMonoCache::godot_api_cache_updated || !GDMonoCache::managed_callbacks.ScriptManagerBridge_GetGlobalClassName) {
 		return class_name;
 	}
-	GDMonoCache::managed_callbacks.ScriptManagerBridge_GetGlobalClassName(&p_path, r_base_type, r_icon_path, r_is_abstract, r_is_tool, &class_name);
+
+	// =========================================================================
+	// CRASH FIX: Proteksyon sa nullptr dereference sa loob ng C# bridge!
+	// Gumamit ng dummy stack variables kapag nullptr ang ipinasa ng Godot caller.
+	// =========================================================================
+	String base_type;
+	String icon_path;
+	bool is_abstract = false;
+	bool is_tool = false;
+
+	GDMonoCache::managed_callbacks.ScriptManagerBridge_GetGlobalClassName(
+			&p_path,
+			r_base_type ? r_base_type : &base_type,
+			r_icon_path ? r_icon_path : &icon_path,
+			r_is_abstract ? r_is_abstract : &is_abstract,
+			r_is_tool ? r_is_tool : &is_tool,
+			&class_name);
+
 	return class_name;
 }
 
