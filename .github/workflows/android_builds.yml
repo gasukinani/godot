@@ -84,7 +84,7 @@ jobs:
             ${{ runner.os }}-scons-godot-4-3-
           save-always: true
 
-      # 4. Kopyahin ang custom files at gamitan ng SED para maayos ang LAHAT ng errors!
+      # 4. Kopyahin ang custom files at ilapat ang malinis na patch
       - name: Apply SED Patches to Mono & C++ Code
         run: |
           echo "=== Step 1: Copying headers and files ==="
@@ -99,26 +99,14 @@ jobs:
           sed -i 's/"windows", "macos", "linuxbsd"/"windows", "macos", "linuxbsd", "android"/g' godot_src/modules/mono/build_scripts/mono_configure.py
           find godot_src/modules/mono -name "SCsub*" -o -name "*.py" | xargs sed -i '/scons_hints/d' || true
 
-          echo "=== Step 3: Patching gd_mono.cpp via SED ==="
+          echo "=== Step 3: Cleanup gd_mono.cpp ==="
           TARGET_CPP="godot_src/modules/mono/mono_gd/gd_mono.cpp"
 
-          # 1. Ayusin ang namespace MonoBind -> mono_bind
+          # Tiyaking mono_bind ang namespace at walang duplicate definitions
           sed -i 's/namespace MonoBind/namespace mono_bind/g' "$TARGET_CPP"
-
-          # 2. Tanggalin ang reload_assemblies na wala sa Godot 4
           sed -i '/reload_assemblies/d' "$TARGET_CPP"
 
-          # 3. Tanggalin ang duplicate na definition ng get_api_core_hash at editor_hash
-          sed -i 's/uint64_t GDMono::get_api_core_hash() {/static uint64_t _unused_core_hash() {/g' "$TARGET_CPP"
-          sed -i 's/uint64_t GDMono::get_api_editor_hash() {/static uint64_t _unused_editor_hash() {/g' "$TARGET_CPP"
-
-          # 4. Idagdag ang coreclr_dll_handle variable
-          sed -i 's/coreclr_initialize_fn coreclr_initialize = nullptr;/coreclr_initialize_fn coreclr_initialize = nullptr;\nvoid *coreclr_dll_handle = nullptr;/' "$TARGET_CPP"
-
-          # 5. Idagdag ang Path namespace helper para sa get_csharp_project_name()
-          sed -i 's/GDMono \*GDMono::singleton = nullptr;/GDMono *GDMono::singleton = nullptr;\nnamespace Path { static String get_csharp_project_name() { return "Game"; } }/' "$TARGET_CPP"
-
-          echo "SED Patches applied successfully!"
+          echo "Clean patches applied successfully!"
 
       # 5. Instant Glue Extraction (10 seconds lang!)
       - name: Instant Mono Glue Extraction
