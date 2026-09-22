@@ -75,6 +75,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-scons-android-mono-${{ github.ref }}-
             ${{ runner.os }}-scons-android-mono-
+          save-always: true
 
       - name: Build Android Native Libraries (SCons)
         env:
@@ -93,7 +94,7 @@ jobs:
             scons_cache=$SCONS_CACHE \
             -j$(nproc)
 
-      - name: Package Android APK (Gradle)
+      - name: Package Android APK (Official Godot Gradle Task)
         run: |
           TARGET="${{ inputs.target_type || 'editor' }}"
           cd platform/android/java
@@ -101,22 +102,25 @@ jobs:
 
           if [ "$TARGET" = "editor" ]; then
             echo "Packaging Godot Android Editor APK..."
-            ./gradlew assembleEditorRelease
+            ./gradlew generateGodotEditor
           else
             echo "Packaging Godot Android Export Template APK..."
-            ./gradlew assembleTemplateRelease
+            ./gradlew generateGodotTemplates
           fi
 
       - name: Copy & Organize APK Outputs
         run: |
           mkdir -p build_output/
-          # Hahanapin ang APK kahit saan nilagay ng Gradle sa repo
-          find . -name "*.apk" -exec cp -v {} build_output/ \;
+          # Ang generateGodotEditor ay naglalagay ng APK diretso sa godot/bin/ folder
+          cp -v bin/*.apk build_output/ || true
+          # Mag-fallback sa pag-find kung sakaling may iba pang APK na nabuo
+          find . -name "*.apk" -exec cp -v {} build_output/ \; || true
           
+          # Kopyahin din ang .so libraries
           mkdir -p build_output/libs/
           find bin/ -name "*android*.so" -exec cp -v {} build_output/libs/ \; || true
 
-          echo "Mga nahanap na APK:"
+          echo "Nilalaman ng build_output folder:"
           ls -la build_output/
 
       - name: Upload APK Artifact
