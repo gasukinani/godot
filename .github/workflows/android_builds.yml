@@ -56,7 +56,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y scons pkg-config libx11-dev libxcursor-dev \
             libxinerama-dev libgl1-mesa-dev libglu-dev libasound2-dev \
-            libpulse-dev libudev-dev libxi-dev yasm unzip curl
+            libpulse-dev libudev-dev libxi-dev yasm unzip curl zip
           python -m pip install --upgrade pip
           pip install scons
 
@@ -94,7 +94,7 @@ jobs:
             scons_cache=$SCONS_CACHE \
             -j$(nproc)
 
-      - name: Download & Bundle All .NET Mono Native Libs into APK
+      - name: Download & Inject All .NET Native Libs (hostfxr, monosgen, coreclr, clrjit) into APK
         run: |
           ARCH="${{ inputs.arch_type || 'arm64' }}"
           
@@ -109,38 +109,53 @@ jobs:
             ANDROID_ABI="x86_64"
           fi
 
-          echo "Downloading .NET 8 Android Runtime package for $DOTNET_RID..."
-          curl -L -o mono_runtime.zip "https://www.nuget.org/api/v2/package/Microsoft.NETCore.App.Runtime.Mono.${DOTNET_RID}/8.0.8"
-          unzip -q mono_runtime.zip -d mono_extracted
+          echo "Downloading .NET 8 Runtime packs for $DOTNET_RID..."
 
-          # 1. Kopyahin ang libmonosgen-2.0.so sa 'bin/' (kung saan kumukuha ang Gradle)
-          mkdir -p bin/
-          cp -v mono_extracted/runtimes/${DOTNET_RID}/native/libmonosgen-2.0.so bin/
+          # 1. Download Mono Runtime Pack (libmonosgen-2.0.so + BCL DLLs)
+          curl -L -o mono_pack.zip "https://www.nuget.org/api/v2/package/Microsoft.NETCore.App.Runtime.Mono.${DOTNET_RID}/8.0.8" || true
+          unzip -q mono_pack.zip -d mono_extracted || true
 
-          # 2. Isama sa lahat ng jniLibs target directories sa Godot Android project
-          # (Sumasaklaw sa editor, lib, at app modules)
-          for dir in \
-            platform/android/java/editor/src/main/jniLibs/${ANDROID_ABI} \
-            platform/android/java/lib/src/main/jniLibs/${ANDROID_ABI} \
-            platform/android/java/app/src/main/jniLibs/${ANDROID_ABI} \
-            platform/android/java/editor/libs/${ANDROID_ABI} \
-            platform/android/java/lib/libs/${ANDROID_ABI}
-          do
+          # 2. Download CoreCLR Runtime Pack (libcoreclr.so, libclrjit.so, libhostfxr.so, libhostpolicy.so)
+          curl -L -o coreclr_pack.zip "https://www.nuget.org/api/v2/package/Microsoft.NETCore.App.Runtime.${DOTNET_RID}/8.0.8" || true
+          unzip -q coreclr_pack.zip -d coreclr_extracted || true
+
+          # Ihanda ang mga target directory para sa Gradle jniLibs
+          TARGET_DIRS=(
+            "bin"
+            "platform/android/java/editor/src/main/jniLibs/${ANDROID_ABI}"
+            "platform/android/java/lib/src/main/jniLibs/${ANDROID_ABI}"
+            "platform/android/java/app/src/main/jniLibs/${ANDROID_ABI}"
+            "platform/android/java/editor/libs/${ANDROID_ABI}"
+            "platform/android/java/lib/libs/${ANDROID_ABI}"
+            "build_output/mono_bundle/mono"
+            "build_output/libs/${ANDROID_ABI}"
+          )
+
+          for dir in "${TARGET_DIRS[@]}"; do
             mkdir -p "$dir"
-            cp -v mono_extracted/runtimes/${DOTNET_RID}/native/libmonosgen-2.0.so "$dir/"
           done
 
-          # 3. I-bundle ang BCL assemblies (System.*.dll) sa Assets ng Editor APK
+          # 3. Kopyahin LAHAT ng .so files (monosgen, coreclr, clrjit, hostfxr, hostpolicy, atbp.) sa bawat target directory
+          echo "Copying all shared libraries (.so)..."
+          find mono_extracted/ coreclr_extracted/ -name "*.so" | while read so_file; do
+            echo "Found native library: $so_file"
+            for dir in "${TARGET_DIRS[@]}"; do
+              cp -v "$so_file" "$dir/"
+            done
+          done
+
+          # 4. Kopyahin ang mga BCL DLLs (System.*.dll)
           ASSETS_DIR="platform/android/java/editor/src/main/assets/mono/assemblies"
           mkdir -p "$ASSETS_DIR"
-          cp -v mono_extracted/runtimes/${DOTNET_RID}/lib/net8.0/*.dll "$ASSETS_DIR/"
+          mkdir -p "build_output/mono_bundle/mono/assemblies"
+          
+          find mono_extracted/ coreclr_extracted/ -name "*.dll" | while read dll_file; do
+            cp "$dll_file" "$ASSETS_DIR/"
+            cp "$dll_file" "build_output/mono_bundle/mono/assemblies/"
+          done
 
-          # Ihanda din ang stand-alone phone storage bundle
-          mkdir -p build_output/mono_bundle/mono/assemblies/
-          cp -v mono_extracted/runtimes/${DOTNET_RID}/native/libmonosgen-2.0.so build_output/mono_bundle/mono/
-          cp -v mono_extracted/runtimes/${DOTNET_RID}/lib/net8.0/*.dll build_output/mono_bundle/mono/assemblies/
-
-          echo "All native libraries and assemblies injected successfully!"
+          echo "Listahan ng mga na-inject na native libraries sa jniLibs:"
+          ls -la platform/android/java/editor/src/main/jniLibs/${ANDROID_ABI}/
 
       - name: Package Android APK (Official Godot Gradle Task)
         run: |
@@ -163,7 +178,7 @@ jobs:
           # Hanapin at kopyahin ang nabuong APK
           find bin/ platform/android/java -name "*.apk" -exec cp -v {} build_output/apk/ \;
           
-          # I-compress ang mono bundle para sa optional phone storage
+          # I-archive ang phone storage bundle (kung sakaling gustong i-manual extract sa /storage/emulated/0/mono)
           cd build_output/mono_bundle
           zip -r ../mono_phone_storage.zip mono/
           cd ../..
@@ -172,13 +187,12 @@ jobs:
           echo "Nilalaman ng build_output/apk:"
           ls -la build_output/apk/
 
-      - name: Verify Native Libs Inside APK
+      - name: Verify Native Libs Inside Final APK
         run: |
-          # I-verify kung talagang pumasok ang libmonosgen-2.0.so sa loob ng APK
           APK_FILE=$(find build_output/apk/ -name "*.apk" | head -n 1)
           if [ -n "$APK_FILE" ]; then
-            echo "Inspecting libs inside: $APK_FILE"
-            unzip -l "$APK_FILE" | grep -E "libmonosgen|libgodot" || true
+            echo "Inspecting all native .so libraries inside $APK_FILE:"
+            unzip -l "$APK_FILE" | grep -E "\.so$" || true
           fi
 
       - name: Upload Godot Editor APK
