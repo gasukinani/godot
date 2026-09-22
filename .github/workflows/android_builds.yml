@@ -33,7 +33,7 @@ jobs:
           path: 'godot_src'
           submodules: recursive
 
-      # 1. I-apply ang lahat ng custom Mono files (gd_mono.cpp, mono_configure.py, delegates, etc.)
+      # 1. I-apply ang lahat ng custom Mono files at linisin ang IDE hints
       - name: Apply Custom Android Mono Patches
         run: |
           echo "Injecting custom Mono files into Godot 4.3-stable tree..."
@@ -44,7 +44,11 @@ jobs:
             cp -fv custom_repo/modules/mono/mono_gd/gd_mono.cpp godot_src/modules/mono/mono_gd/gd_mono.cpp
           fi
 
-          # Karagdagang safety bypass sa mono_configure.py kung hindi pa kasama sa custom_repo
+          # TANGGALIN ang 'scons_hints' import na nagdudulot ng ModuleNotFoundError
+          echo "Removing unnecessary scons_hints imports..."
+          find godot_src/modules/mono -type f \( -name "SCsub" -o -name "*.py" \) -exec sed -i '/scons_hints/d' {} +
+
+          # I-bypass ang platform check sa mono_configure.py
           sed -i 's/return is_desktop(platform)/return is_desktop(platform) or platform == "android"/g' godot_src/modules/mono/build_scripts/mono_configure.py
           sed -i 's/if not module_supports_tools_on(env\["platform"\]):/if env\["platform"\] not in \["windows", "macos", "linuxbsd", "android"\]:/g' godot_src/modules/mono/build_scripts/mono_configure.py
 
