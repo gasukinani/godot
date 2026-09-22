@@ -62,7 +62,6 @@ jobs:
 
       - name: Locate & Configure Android NDK
         run: |
-          # Awtomatikong hanapin ang pinakabagong naka-install na NDK sa GitHub runner
           ANDROID_NDK_LATEST=$(find $ANDROID_SDK_ROOT/ndk -maxdepth 1 -mindepth 1 | sort -V | tail -n 1)
           echo "Found Android NDK at: $ANDROID_NDK_LATEST"
           echo "ANDROID_NDK_ROOT=$ANDROID_NDK_LATEST" >> $GITHUB_ENV
@@ -76,17 +75,6 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-scons-android-mono-${{ github.ref }}-
             ${{ runner.os }}-scons-android-mono-
-
-      - name: Check / Generate Mono Glue
-        run: |
-          # Kung wala pang glue files sa repo, mag-compile muna ng headless linux binary para mag-generate ng glue
-          if [ ! -f "modules/mono/glue/runtime_interop.h" ]; then
-            echo "Mono glue not found! Building minimal host binary to generate glue..."
-            scons platform=linuxbsd target=editor module_mono_enabled=yes -j$(nproc)
-            ./bin/godot.linuxbsd.editor.x86_64.mono --headless --generate-mono-glue modules/mono/glue
-          else
-            echo "Mono glue already exists. Skipping glue generation."
-          fi
 
       - name: Build Android Native Libraries (SCons)
         env:
@@ -105,13 +93,6 @@ jobs:
             scons_cache=$SCONS_CACHE \
             -j$(nproc)
 
-      - name: Build C# Managed Assemblies (GodotSharp & Plugins)
-        run: |
-          if [ -f "./modules/mono/build_scripts/build_assemblies.py" ]; then
-            echo "Building GodotSharp managed assemblies..."
-            python ./modules/mono/build_scripts/build_assemblies.py --godot-output-dir=./bin
-          fi
-
       - name: Package Android APK (Gradle)
         run: |
           TARGET="${{ inputs.target_type || 'editor' }}"
@@ -119,29 +100,25 @@ jobs:
           chmod +x ./gradlew
 
           if [ "$TARGET" = "editor" ]; then
-            echo "Building Godot Android Editor APK..."
+            echo "Packaging Godot Android Editor APK..."
             ./gradlew assembleEditorRelease
           else
-            echo "Building Godot Android Export Template APK..."
+            echo "Packaging Godot Android Export Template APK..."
             ./gradlew assembleTemplateRelease
           fi
 
       - name: Copy & Organize APK Outputs
         run: |
           mkdir -p build_output/
-          # Kopyahin ang mga nagawang APK mula sa gradle build folder
+          # Kopyahin ang nabuong APK
           find platform/android/java/app/build/outputs/apk/ -name "*.apk" -exec cp {} build_output/ \;
-          # Kopyahin din ang mga .so libraries kung kailangan
+          # Kopyahin din ang native .so libraries
           mkdir -p build_output/libs/
           find bin/ -name "*android*.so" -exec cp {} build_output/libs/ \; || true
-          # Kopyahin ang managed assemblies kung nabuo
-          if [ -d "bin/GodotSharp" ]; then
-            cp -r bin/GodotSharp build_output/
-          fi
 
-      - name: Upload APK & Build Artifacts
+      - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: godot-android-mono-build
+          name: godot-android-mono-apk
           path: build_output/
           if-no-files-found: error
