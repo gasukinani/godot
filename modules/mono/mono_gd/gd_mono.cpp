@@ -39,7 +39,6 @@ hostfxr_initialize_for_runtime_config_fn hostfxr_initialize_for_runtime_config =
 hostfxr_get_runtime_delegate_fn hostfxr_get_runtime_delegate = nullptr;
 hostfxr_close_fn hostfxr_close = nullptr;
 
-// Pinapayagan na ang CoreCLR/Mono delegates maging sa Editor (TOOLS_ENABLED) para sa Android
 typedef int(CORECLR_DELEGATE_CALLTYPE *coreclr_create_delegate_fn)(void *hostHandle, unsigned int domainId, const char *entryPointAssemblyName, const char *entryPointTypeName, const char *entryPointMethodName, void **delegate);
 typedef int(CORECLR_DELEGATE_CALLTYPE *coreclr_initialize_fn)(const char *exePath, const char *appDomainFriendlyName, int propertyCount, const char **propertyKeys, const char **propertyValues, void **hostHandle, unsigned int *domainId);
 
@@ -79,7 +78,7 @@ const char_t *get_data(const HostFxrCharString &p_char_str) {
 #ifdef TOOLS_ENABLED
 bool try_get_dotnet_root_from_command_line(String &r_dotnet_root) {
 #if defined(ANDROID_ENABLED)
-	return false; // Walang desktop `dotnet` CLI sa Android
+	return false;
 #else
 	String pipe;
 	List<String> args;
@@ -238,10 +237,8 @@ bool load_hostfxr(void *&r_hostfxr_dll_handle) {
 
 bool load_coreclr(void *&r_coreclr_dll_handle) {
 	String coreclr_path = find_coreclr();
-	bool is_monovm = false;
 	if (coreclr_path.is_empty() || !FileAccess::exists(coreclr_path)) {
 		coreclr_path = find_monosgen();
-		is_monovm = true;
 	}
 
 	if (coreclr_path.is_empty()) {
@@ -411,8 +408,9 @@ MonoAssembly *load_assembly_from_pck(MonoAssemblyName *p_assembly_name, char **p
 		assembly_name += ".dll";
 	}
 
-	String ext_path_assemblies = "/storage/emulated/0/mono/assemblies/".path_join(assembly_name);
-	String ext_path_root = "/storage/emulated/0/mono/".path_join(assembly_name);
+	// Inayos: Naka-wrap na sa String(...) ang path
+	String ext_path_assemblies = String("/storage/emulated/0/mono/assemblies").path_join(assembly_name);
+	String ext_path_root = String("/storage/emulated/0/mono").path_join(assembly_name);
 	String path;
 
 	if (FileAccess::exists(ext_path_assemblies)) {
@@ -528,14 +526,14 @@ void GDMono::initialize() {
 		godot_plugins_initialize = initialize_hostfxr_and_godot_plugins(runtime_initialized);
 	}
 
-	// 2. Fallback sa CoreCLR / Mono (Gagana kapwa sa Editor at Game sa Android)
+	// 2. Fallback sa CoreCLR / Mono
 	if (godot_plugins_initialize == nullptr && load_coreclr(coreclr_dll_handle)) {
 		godot_plugins_initialize = initialize_coreclr_and_godot_plugins(runtime_initialized);
 	}
 
 	if (godot_plugins_initialize == nullptr) {
 #ifdef TOOLS_ENABLED
-		OS::get_singleton()->alert(TTR("Hindi ma-load ang .NET runtime (hostfxr o libmonosgen-2.0.so).\nPakisigurado na nabigyan ng storage permission ang Godot at may runtime libraries sa /storage/emulated/0/mono/."), TTR("Failed to load .NET runtime"));
+		OS::get_singleton()->alert(TTR("Hindi ma-load ang .NET runtime (hostfxr o libmonosgen-2.0.so).\nPakisigurado na may storage permission at may runtime libraries sa /storage/emulated/0/mono/."), TTR("Failed to load .NET runtime"));
 #endif
 		ERR_FAIL_MSG(".NET: Failed to load .NET runtime");
 	}
@@ -623,7 +621,8 @@ bool GDMono::_load_project_assembly() {
 
 #if defined(ANDROID_ENABLED)
 	if (!FileAccess::exists(assembly_path)) {
-		String ext_path = "/storage/emulated/0/mono/assemblies/".path_join(assembly_name + ".dll");
+		// Inayos: Naka-wrap na sa String(...) ang path
+		String ext_path = String("/storage/emulated/0/mono/assemblies").path_join(assembly_name + ".dll");
 		if (FileAccess::exists(ext_path)) {
 			assembly_path = ext_path;
 		}
