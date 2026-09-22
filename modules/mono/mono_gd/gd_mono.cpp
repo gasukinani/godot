@@ -42,6 +42,25 @@
 
 GDMono *GDMono::singleton = nullptr;
 
+// AYOS: Helper para sa Path::get_csharp_project_name()
+namespace Path {
+static String get_csharp_project_name() {
+	String name;
+	if (ProjectSettings::get_singleton()) {
+		if (ProjectSettings::get_singleton()->has_setting("dotnet/project/assembly_name")) {
+			name = ProjectSettings::get_singleton()->get_setting("dotnet/project/assembly_name");
+		}
+		if (name.is_empty() && ProjectSettings::get_singleton()->has_setting("application/config/name")) {
+			name = ProjectSettings::get_singleton()->get_setting("application/config/name");
+		}
+	}
+	if (name.is_empty()) {
+		name = "Game";
+	}
+	return name;
+}
+} // namespace Path
+
 namespace {
 
 void write_mono_log(const String &p_msg) {
@@ -70,8 +89,6 @@ typedef int(CORECLR_DELEGATE_CALLTYPE *coreclr_initialize_fn)(const char *exePat
 
 coreclr_create_delegate_fn coreclr_create_delegate = nullptr;
 coreclr_initialize_fn coreclr_initialize = nullptr;
-
-// AYOS: Idinagdag para hindi mag-undeclared identifier
 void *coreclr_dll_handle = nullptr;
 
 #ifdef ANDROID_ENABLED
@@ -550,23 +567,6 @@ void GDMono::_init_godot_api_hashes() {
 #endif
 }
 
-#ifdef DEBUG_ENABLED
-uint64_t GDMono::get_api_core_hash() {
-	if (api_core_hash == 0) {
-		api_core_hash = ClassDB::get_api_hash(ClassDB::API_CORE);
-	}
-	return api_core_hash;
-}
-#ifdef TOOLS_ENABLED
-uint64_t GDMono::get_api_editor_hash() {
-	if (api_editor_hash == 0) {
-		api_editor_hash = ClassDB::get_api_hash(ClassDB::API_EDITOR);
-	}
-	return api_editor_hash;
-}
-#endif
-#endif
-
 #ifdef TOOLS_ENABLED
 bool GDMono::_load_project_assembly() {
 	if (!initialized) {
@@ -619,10 +619,8 @@ GDMono::~GDMono() {
 	singleton = nullptr;
 }
 
-// AYOS: mono_bind (lowercase with underscore) ang opisyal na namespace
 namespace mono_bind {
 GodotSharp *GodotSharp::singleton = nullptr;
-void GodotSharp::reload_assemblies() {}
 GodotSharp::GodotSharp() { singleton = this; }
 GodotSharp::~GodotSharp() { singleton = nullptr; }
 } // namespace mono_bind
