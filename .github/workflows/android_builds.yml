@@ -1,4 +1,4 @@
- name: Build Android (Mono / C# Enabled)
+name: Build Android (Mono / C# Enabled)
 
 on:
   push:
