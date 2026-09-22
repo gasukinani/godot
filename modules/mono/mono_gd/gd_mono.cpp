@@ -431,12 +431,15 @@ MonoAssembly *load_assembly_from_pck(MonoAssemblyName *p_assembly_name, char **p
 
 	String ext_path_assemblies = String("/storage/emulated/0/mono/assemblies").path_join(assembly_name);
 	String ext_path_root = String("/storage/emulated/0/mono").path_join(assembly_name);
+	String ext_path_api = String("/storage/emulated/0/mono/GodotSharp/Api/Debug").path_join(assembly_name);
 	String path;
 
 	if (FileAccess::exists(ext_path_assemblies)) {
 		path = ext_path_assemblies;
 	} else if (FileAccess::exists(ext_path_root)) {
 		path = ext_path_root;
+	} else if (FileAccess::exists(ext_path_api)) {
+		path = ext_path_api;
 	} else {
 		path = GodotSharpDirs::get_api_assemblies_dir().path_join(assembly_name);
 	}
@@ -474,25 +477,41 @@ godot_plugins_initialize_fn initialize_coreclr_and_godot_plugins(bool &r_runtime
 	void *coreclr_handle = nullptr;
 	unsigned int domain_id = 0;
 	int rc = coreclr_initialize(nullptr, nullptr, 0, nullptr, nullptr, &coreclr_handle, &domain_id);
-	ERR_FAIL_COND_V_MSG(rc != 0, nullptr, ".NET: Failed to initialize CoreCLR/Mono.");
+	if (rc != 0 || coreclr_handle == nullptr) {
+		ERR_PRINT(".NET: Failed to initialize CoreCLR/Mono runtime.");
+		return nullptr;
+	}
 
 	r_runtime_initialized = true;
+	print_verbose(".NET: CoreCLR/Mono runtime initialized successfully.");
 
 #ifdef TOOLS_ENABLED
-	coreclr_create_delegate(coreclr_handle, domain_id,
+	int del_rc = coreclr_create_delegate(coreclr_handle, domain_id,
 			"GodotPlugins",
 			"GodotPlugins.Main",
 			"InitializeFromEngine",
 			(void **)&godot_plugins_initialize);
+
+	if (del_rc != 0 || godot_plugins_initialize == nullptr) {
+		del_rc = coreclr_create_delegate(coreclr_handle, domain_id,
+				"GodotPlugins, Version=4.3.0.0, Culture=neutral, PublicKeyToken=null",
+				"GodotPlugins.Main",
+				"InitializeFromEngine",
+				(void **)&godot_plugins_initialize);
+	}
 #else
 	String assembly_name = Path::get_csharp_project_name();
-	coreclr_create_delegate(coreclr_handle, domain_id,
+	int del_rc = coreclr_create_delegate(coreclr_handle, domain_id,
 			assembly_name.utf8().get_data(),
 			"GodotPlugins.Game.Main",
 			"InitializeFromGameProject",
 			(void **)&godot_plugins_initialize);
 #endif
-	ERR_FAIL_NULL_V_MSG(godot_plugins_initialize, nullptr, ".NET: Failed to get GodotPlugins initialization function pointer");
+
+	if (godot_plugins_initialize == nullptr) {
+		ERR_PRINT(".NET: Failed to bind GodotPlugins initialization function pointer.");
+		return nullptr;
+	}
 
 	return godot_plugins_initialize;
 }
@@ -551,8 +570,8 @@ void GDMono::initialize() {
 #endif
 
 #if defined(ANDROID_ENABLED)
-	// ANDROID FIX: Sa Android, libmonosgen-2.0.so (CoreCLR interop) ang unang gamitin
-	// para maiwasan ang "libdl.so.2 not found" error mula sa desktop libhostfxr.so
+	// ANDROID FIX: Sa Android, libmonosgen-2.0.so (MonoVM) ang unang gamitin
+	// upang maiwasan ang "libdl.so.2 not found" error mula sa desktop libhostfxr.so
 	if (load_coreclr(coreclr_dll_handle)) {
 		godot_plugins_initialize = initialize_coreclr_and_godot_plugins(runtime_initialized);
 	}
