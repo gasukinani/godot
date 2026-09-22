@@ -432,6 +432,7 @@ MonoAssembly *load_assembly_from_pck(MonoAssemblyName *p_assembly_name, char **p
 	String ext_path_assemblies = String("/storage/emulated/0/mono/assemblies").path_join(assembly_name);
 	String ext_path_root = String("/storage/emulated/0/mono").path_join(assembly_name);
 	String ext_path_api = String("/storage/emulated/0/mono/GodotSharp/Api/Debug").path_join(assembly_name);
+	String internal_path_assemblies = OS::get_singleton()->get_user_data_dir().path_join("mono/assemblies").path_join(assembly_name);
 	String path;
 
 	if (FileAccess::exists(ext_path_assemblies)) {
@@ -440,6 +441,8 @@ MonoAssembly *load_assembly_from_pck(MonoAssemblyName *p_assembly_name, char **p
 		path = ext_path_root;
 	} else if (FileAccess::exists(ext_path_api)) {
 		path = ext_path_api;
+	} else if (FileAccess::exists(internal_path_assemblies)) {
+		path = internal_path_assemblies;
 	} else {
 		path = GodotSharpDirs::get_api_assemblies_dir().path_join(assembly_name);
 	}
@@ -477,13 +480,11 @@ godot_plugins_initialize_fn initialize_coreclr_and_godot_plugins(bool &r_runtime
 	void *coreclr_handle = nullptr;
 	unsigned int domain_id = 0;
 
-	// =========================================================================
-	// TPA (Trusted Platform Assemblies) & APP_PATHS Configuration para sa Android
-	// =========================================================================
 	PackedStringArray tpa_list;
 	PackedStringArray app_paths;
 
-	static const char *search_dirs[] = {
+	String internal_mono_dir = OS::get_singleton()->get_user_data_dir().path_join("mono");
+	const char *search_dirs[] = {
 		"/storage/emulated/0/mono",
 		"/storage/emulated/0/mono/assemblies",
 		"/storage/emulated/0/mono/GodotSharp/Api/Debug",
@@ -502,6 +503,19 @@ godot_plugins_initialize_fn initialize_coreclr_and_godot_plugins(bool &r_runtime
 					if (!da->current_is_dir() && file.ends_with(".dll")) {
 						tpa_list.append(dir_path.path_join(file));
 					}
+				}
+			}
+		}
+	}
+
+	if (DirAccess::exists(internal_mono_dir)) {
+		app_paths.append(internal_mono_dir);
+		Ref<DirAccess> da = DirAccess::open(internal_mono_dir);
+		if (da.is_valid()) {
+			da->list_dir_begin();
+			for (String file = da->get_next(); !file.is_empty(); file = da->get_next()) {
+				if (!da->current_is_dir() && file.ends_with(".dll")) {
+					tpa_list.append(internal_mono_dir.path_join(file));
 				}
 			}
 		}
@@ -530,8 +544,9 @@ godot_plugins_initialize_fn initialize_coreclr_and_godot_plugins(bool &r_runtime
 
 	print_verbose(".NET: Initializing CoreCLR with " + itos(tpa_list.size()) + " TPA assemblies.");
 
+	String exe_dir = OS::get_singleton()->get_executable_path().get_base_dir();
 	int rc = coreclr_initialize(
-			"/data/data/org.godotengine.editor.v4.debug/files",
+			exe_dir.utf8().get_data(),
 			"GodotEngineDomain",
 			property_count,
 			property_keys,
@@ -539,7 +554,9 @@ godot_plugins_initialize_fn initialize_coreclr_and_godot_plugins(bool &r_runtime
 			&coreclr_handle,
 			&domain_id);
 
-	if (rc != 0 || coreclr_handle == nullptr) {
+	// CRITICAL FIX: Sa MonoVM, rc == 0 (S_OK) ang tanging batayan ng success.
+	// Hindi dapat i-require na non-null ang coreclr_handle dahil 0x0 ito sa Mono.
+	if (rc != 0) {
 		ERR_PRINT(vformat(".NET: Failed to initialize CoreCLR/Mono runtime. Error code (HRESULT): 0x%X", (unsigned int)rc));
 		return nullptr;
 	}
@@ -632,8 +649,6 @@ void GDMono::initialize() {
 #endif
 
 #if defined(ANDROID_ENABLED)
-	// ANDROID FIX: Sa Android, libmonosgen-2.0.so (MonoVM) ang unang gamitin
-	// upang maiwasan ang "libdl.so.2 not found" error mula sa desktop libhostfxr.so
 	if (load_coreclr(coreclr_dll_handle)) {
 		godot_plugins_initialize = initialize_coreclr_and_godot_plugins(runtime_initialized);
 	}
