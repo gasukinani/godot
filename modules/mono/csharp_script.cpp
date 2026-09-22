@@ -1,4 +1,4 @@
-/**************************************************************************/
+ /**************************************************************************/
 /*  csharp_script.cpp                                                     */
 /**************************************************************************/
 /*                         This file is part of:                          */
@@ -105,6 +105,12 @@ void CSharpLanguage::init() {
 
 	if (gdmono->should_initialize()) {
 		gdmono->initialize();
+	}
+
+	// Safe Guard: Kung hindi na-initialize nang buo, i-deregister para hindi mag-crash ang editor
+	if (!gdmono->is_runtime_initialized()) {
+		WARN_PRINT(".NET: Runtime initialization incomplete. Safely unregistering C# to prevent editor crash.");
+		ScriptServer::unregister_language(this);
 	}
 }
 
@@ -213,7 +219,79 @@ bool CSharpLanguage::is_using_templates() {
 	return true;
 }
 
+#ifdef TOOLS_ENABLED
+// Awtomatikong gumagawa ng .csproj at .sln para hindi na mag-crash ang GodotTools sa Android
+static void _ensure_csharp_project_files_exist() {
+	if (!Engine::get_singleton()->is_editor_hint()) {
+		return;
+	}
+
+	String project_name = Path::get_csharp_project_name();
+	if (project_name.is_empty()) {
+		project_name = "Game";
+	}
+
+	String csproj_path = ProjectSettings::get_singleton()->globalize_path("res://" + project_name + ".csproj");
+	String sln_path = ProjectSettings::get_singleton()->globalize_path("res://" + project_name + ".sln");
+
+	// 1. Gumawa ng .csproj kung wala pa
+	if (!FileAccess::exists(csproj_path)) {
+		Ref<FileAccess> f = FileAccess::open(csproj_path, FileAccess::WRITE);
+		if (f.is_valid()) {
+			String csproj_content =
+					"<Project Sdk=\"Godot.NET.Sdk/4.3.0\">\n"
+					"  <PropertyGroup>\n"
+					"    <TargetFramework>net8.0</TargetFramework>\n"
+					"    <EnableDynamicLoading>true</EnableDynamicLoading>\n"
+					"  </PropertyGroup>\n"
+					"</Project>\n";
+			f->store_string(csproj_content);
+			f->close();
+			print_verbose(".NET: Auto-generated C# project file: " + csproj_path);
+		}
+	}
+
+	// 2. Gumawa ng .sln kung wala pa
+	if (!FileAccess::exists(sln_path)) {
+		Ref<FileAccess> f = FileAccess::open(sln_path, FileAccess::WRITE);
+		if (f.is_valid()) {
+			String guid = "8B115A37-2E89-4D3B-B03B-5D3E83626D2A";
+			String sln_content =
+					"Microsoft Visual Studio Solution File, Format Version 12.00\n"
+					"# Visual Studio Version 17\n"
+					"VisualStudioVersion = 17.0.31903.59\n"
+					"MinimumVisualStudioVersion = 10.0.40219.1\n"
+					"Project(\"{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}\") = \"" + project_name + "\", \"" + project_name + ".csproj\", \"{" + guid + "}\"\n"
+					"EndProject\n"
+					"Global\n"
+					"\tGlobalSection(SolutionConfigurationPlatforms) = preSolution\n"
+					"\t\tDebug|Any CPU = Debug|Any CPU\n"
+					"\t\tExportDebug|Any CPU = ExportDebug|Any CPU\n"
+					"\t\tExportRelease|Any CPU = ExportRelease|Any CPU\n"
+					"\tEndGlobalSection\n"
+					"\tGlobalSection(ProjectConfigurationPlatforms) = postSolution\n"
+					"\t\t{" + guid + "}.Debug|Any CPU.ActiveCfg = Debug|Any CPU\n"
+					"\t\t{" + guid + "}.Debug|Any CPU.Build.0 = Debug|Any CPU\n"
+					"\t\t{" + guid + "}.ExportDebug|Any CPU.ActiveCfg = ExportDebug|Any CPU\n"
+					"\t\t{" + guid + "}.ExportDebug|Any CPU.Build.0 = ExportDebug|Any CPU\n"
+					"\t\t{" + guid + "}.ExportRelease|Any CPU.ActiveCfg = ExportRelease|Any CPU\n"
+					"\t\t{" + guid + "}.ExportRelease|Any CPU.Build.0 = ExportRelease|Any CPU\n"
+					"\tEndGlobalSection\n"
+					"EndGlobal\n";
+			f->store_string(sln_content);
+			f->close();
+			print_verbose(".NET: Auto-generated C# solution file: " + sln_path);
+		}
+	}
+}
+#endif
+
 Ref<Script> CSharpLanguage::make_template(const String &p_template, const String &p_class_name, const String &p_base_class_name) const {
+#ifdef TOOLS_ENABLED
+	// Awtomatikong buuin ang .csproj at .sln para hindi na mag-crash ang GodotTools
+	_ensure_csharp_project_files_exist();
+#endif
+
 	Ref<CSharpScript> scr;
 	scr.instantiate();
 
@@ -288,7 +366,6 @@ bool CSharpLanguage::handles_global_class_type(const String &p_type) const {
 
 String CSharpLanguage::get_global_class_name(const String &p_path, String *r_base_type, String *r_icon_path, bool *r_is_abstract, bool *r_is_tool) const {
 	String class_name;
-	// Safe Guard: Huwag tawagin kung hindi pa na-initialize ang runtime para maiwasan ang SIGSEGV
 	if (!gdmono || !gdmono->is_runtime_initialized() || !GDMonoCache::godot_api_cache_updated || !GDMonoCache::managed_callbacks.ScriptManagerBridge_GetGlobalClassName) {
 		return class_name;
 	}
@@ -441,7 +518,6 @@ bool CSharpLanguage::is_assembly_reloading_needed() {
 		assembly_path = ProjectSettings::get_singleton()->globalize_path(assembly_path);
 
 #if defined(ANDROID_ENABLED)
-		// Inayos: Naka-wrap na sa String(...) para walang build error
 		if (!FileAccess::exists(assembly_path)) {
 			String ext_path = String("/storage/emulated/0/mono/assemblies").path_join(assembly_name + ".dll");
 			if (FileAccess::exists(ext_path)) {
@@ -786,17 +862,27 @@ void CSharpLanguage::reload_assemblies() {
 
 #ifdef TOOLS_ENABLED
 Error CSharpLanguage::open_in_external_editor(const Ref<Script> &p_script, int p_line, int p_col) {
+#if defined(ANDROID_ENABLED)
+	// Sa Android, huwag mag-launch ng external desktop IDE para maiwasan ang process crash
+	return ERR_UNAVAILABLE;
+#else
 	if (!get_godotsharp_editor()) {
 		return ERR_UNCONFIGURED;
 	}
 	return (Error)(int)get_godotsharp_editor()->call("OpenInExternalEditor", p_script, p_line, p_col);
+#endif
 }
 
 bool CSharpLanguage::overrides_external_editor() {
+#if defined(ANDROID_ENABLED)
+	// Buksan ang .cs script diretso sa built-in code editor ng Godot sa Android!
+	return false;
+#else
 	if (!get_godotsharp_editor()) {
 		return false;
 	}
 	return get_godotsharp_editor()->call("OverridesExternalEditor");
+#endif
 }
 #endif
 
@@ -824,7 +910,6 @@ bool CSharpLanguage::debug_break(const String &p_error, bool p_allow_continue) {
 
 #ifdef TOOLS_ENABLED
 void CSharpLanguage::_editor_init_callback() {
-	// Safe Guard: Siguraduhing initialized ang GDMono at may valid na LoadToolsAssemblyCallback bago tumawag
 	if (!GDMono::get_singleton() || !GDMono::get_singleton()->is_runtime_initialized() || GDMono::get_singleton()->get_plugin_callbacks().LoadToolsAssemblyCallback == nullptr) {
 		print_verbose(".NET: Runtime not initialized or LoadToolsAssemblyCallback missing, skipping GodotTools plugin loading.");
 		return;
@@ -1870,11 +1955,12 @@ bool CSharpScript::can_instantiate() const {
 	bool extra_cond = true;
 #endif
 
-	if (extra_cond && !valid) {
-		ERR_FAIL_V_MSG(false, "Cannot instantiate C# script because the associated class could not be found. Script: '" + get_path() + "'.");
+	// Safe Guard: Kung hindi pa compiled o bago ang .cs file, huwag mag-ERR_FAIL_V_MSG para hindi mag-crash ang editor
+	if (!valid) {
+		return false;
 	}
 
-	return valid && type_info.can_instantiate() && extra_cond;
+	return type_info.can_instantiate() && extra_cond;
 }
 
 StringName CSharpScript::get_instance_base_type() const {
@@ -1993,7 +2079,10 @@ PlaceHolderScriptInstance *CSharpScript::placeholder_instance_create(Object *p_t
 #ifdef TOOLS_ENABLED
 	PlaceHolderScriptInstance *si = memnew(PlaceHolderScriptInstance(CSharpLanguage::get_singleton(), Ref<Script>(this), p_this));
 	placeholders.insert(si);
-	_update_exports(si);
+	// Safe Guard: I-update lamang ang exports kung compiled/valid na ang klase sa assembly
+	if (valid) {
+		_update_exports(si);
+	}
 	return si;
 #else
 	return nullptr;
@@ -2105,12 +2194,17 @@ Error CSharpScript::reload(bool p_keep_state) {
 	String script_path = get_path();
 
 	if (!GDMonoCache::godot_api_cache_updated || !GDMonoCache::managed_callbacks.ScriptManagerBridge_AddScriptBridge) {
+		valid = false;
 		return OK;
 	}
 
 	valid = GDMonoCache::managed_callbacks.ScriptManagerBridge_AddScriptBridge(this, &script_path);
 
 	if (valid) {
+#ifdef DEBUG_ENABLED
+		print_verbose("Found class for script " + get_path());
+#endif // DEBUG_ENABLED
+
 		update_script_class_info(this);
 		_update_exports();
 
@@ -2120,6 +2214,8 @@ Error CSharpScript::reload(bool p_keep_state) {
 			efs->update_file(script_path);
 		}
 #endif
+	} else {
+		_clear();
 	}
 
 	return OK;
