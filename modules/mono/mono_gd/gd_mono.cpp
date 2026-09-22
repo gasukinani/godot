@@ -62,6 +62,14 @@ void write_mono_log(const String &p_msg) {
 #endif
 }
 
+String get_csharp_project_name() {
+	String assembly_name = GLOBAL_GET("dotnet/project/assembly_name");
+	if (assembly_name.is_empty()) {
+		assembly_name = GLOBAL_GET("application/config/name");
+	}
+	return assembly_name;
+}
+
 hostfxr_initialize_for_dotnet_command_line_fn hostfxr_initialize_for_dotnet_command_line = nullptr;
 hostfxr_initialize_for_runtime_config_fn hostfxr_initialize_for_runtime_config = nullptr;
 hostfxr_get_runtime_delegate_fn hostfxr_get_runtime_delegate = nullptr;
@@ -399,7 +407,7 @@ godot_plugins_initialize_fn initialize_coreclr_and_godot_plugins(bool &r_runtime
 				(void **)&godot_plugins_initialize);
 	}
 #else
-	String assembly_name = GodotSharpDirs::get_project_assembly_name();
+	String assembly_name = get_csharp_project_name();
 	int del_rc = coreclr_create_delegate(coreclr_handle, domain_id,
 			assembly_name.utf8().get_data(),
 			"GodotPlugins.Game.Main",
@@ -555,7 +563,7 @@ bool GDMono::_load_project_assembly() {
 		return false;
 	}
 
-	String assembly_name = GodotSharpDirs::get_project_assembly_name();
+	String assembly_name = get_csharp_project_name();
 	String assembly_path = GodotSharpDirs::get_res_temp_assemblies_dir().path_join(assembly_name + ".dll");
 	assembly_path = ProjectSettings::get_singleton()->globalize_path(assembly_path);
 
@@ -602,7 +610,9 @@ GDMono::~GDMono() {
 
 namespace mono_bind {
 GodotSharp *GodotSharp::singleton = nullptr;
+#ifdef GD_MONO_HOT_RELOAD
 void GodotSharp::reload_assemblies() {}
+#endif
 GodotSharp::GodotSharp() { singleton = this; }
 GodotSharp::~GodotSharp() { singleton = nullptr; }
 } // namespace mono_bind
