@@ -27,9 +27,24 @@
 #include <dlfcn.h>
 #endif
 
-// Inilabas sa TOOLS_ENABLED para mabasa ng Android Editor
 #ifdef ANDROID_ENABLED
-#include "../thirdparty/mono_delegates.h"
+// Direktang typedefs para hindi mag-error ng 5 unknown types sa Editor Mode
+struct MonoAssembly;
+struct MonoAssemblyName;
+struct MonoImage;
+typedef enum {
+	MONO_IMAGE_OK,
+	MONO_IMAGE_ERROR_ERRNO,
+	MONO_IMAGE_MISSING_ASSEMBLYREF,
+	MONO_IMAGE_IMAGE_INVALID
+} MonoImageOpenStatus;
+
+typedef MonoAssembly *(*MonoAssemblyPreloadHook)(MonoAssemblyName *aname, char **assemblies_path, void *user_data);
+typedef void (*mono_install_assembly_preload_hook_fn)(MonoAssemblyPreloadHook func, void *user_data);
+typedef const char *(*mono_assembly_name_get_name_fn)(MonoAssemblyName *aname);
+typedef const char *(*mono_assembly_name_get_culture_fn)(MonoAssemblyName *aname);
+typedef MonoImage *(*mono_image_open_from_data_with_name_fn)(char *data, uint32_t data_len, int need_copy, MonoImageOpenStatus *status, int refonly, const char *name);
+typedef MonoAssembly *(*mono_assembly_load_from_full_fn)(MonoImage *image, const char *fname, MonoImageOpenStatus *status, int refonly);
 #endif
 
 GDMono *GDMono::singleton = nullptr;
@@ -600,7 +615,7 @@ void GDMono::initialize() {
 	}
 #endif
 
-	// 1. Subukan munang i-load ang hostfxr
+	// 1. Subukang i-load ang hostfxr
 	if (load_hostfxr(hostfxr_dll_handle)) {
 		godot_plugins_initialize = initialize_hostfxr_and_godot_plugins(runtime_initialized);
 	}
