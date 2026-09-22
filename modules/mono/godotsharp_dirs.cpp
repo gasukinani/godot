@@ -163,9 +163,20 @@ private:
 
 #ifdef TOOLS_ENABLED
 		String data_dir_root = exe_dir.path_join("GodotSharp");
+
+#if defined(ANDROID_ENABLED)
+		// I-check kung may GodotSharp folder sa external storage (/storage/emulated/0/mono)
+		if (DirAccess::exists("/storage/emulated/0/mono/GodotSharp")) {
+			data_dir_root = "/storage/emulated/0/mono/GodotSharp";
+		} else if (DirAccess::exists("/storage/emulated/0/mono")) {
+			data_dir_root = "/storage/emulated/0/mono";
+		}
+#endif
+
 		data_editor_tools_dir = data_dir_root.path_join("Tools");
 		String api_assemblies_base_dir = data_dir_root.path_join("Api");
 		build_logs_dir = mono_user_dir.path_join("build_logs");
+
 #ifdef MACOS_ENABLED
 		if (!DirAccess::exists(data_editor_tools_dir)) {
 			data_editor_tools_dir = res_dir.path_join("GodotSharp").path_join("Tools");
@@ -174,15 +185,45 @@ private:
 			api_assemblies_base_dir = res_dir.path_join("GodotSharp").path_join("Api");
 		}
 #endif
+
+#if defined(ANDROID_ENABLED)
+		// Suporta sa flexible folder structure sa Android (Debug subfolder man o flat)
+		if (!DirAccess::exists(data_editor_tools_dir) && DirAccess::exists("/storage/emulated/0/mono/Tools")) {
+			data_editor_tools_dir = "/storage/emulated/0/mono/Tools";
+		}
+		if (!DirAccess::exists(api_assemblies_base_dir) && DirAccess::exists("/storage/emulated/0/mono/Api")) {
+			api_assemblies_base_dir = "/storage/emulated/0/mono/Api";
+		}
+
+		if (DirAccess::exists(api_assemblies_base_dir.path_join(GDMono::get_expected_api_build_config()))) {
+			api_assemblies_dir = api_assemblies_base_dir.path_join(GDMono::get_expected_api_build_config());
+		} else if (DirAccess::exists(api_assemblies_base_dir)) {
+			api_assemblies_dir = api_assemblies_base_dir;
+		} else if (DirAccess::exists("/storage/emulated/0/mono")) {
+			api_assemblies_dir = "/storage/emulated/0/mono";
+		} else {
+			api_assemblies_dir = api_assemblies_base_dir.path_join(GDMono::get_expected_api_build_config());
+		}
+#else
 		api_assemblies_dir = api_assemblies_base_dir.path_join(GDMono::get_expected_api_build_config());
+#endif
+
 #else // TOOLS_ENABLED
 		String platform = _get_platform_name();
 		String arch = Engine::get_singleton()->get_architecture_name();
 		String appname_safe = Path::get_csharp_project_name();
 		String packed_path = "res://.godot/mono/publish/" + arch;
+
 #ifdef ANDROID_ENABLED
-		api_assemblies_dir = packed_path;
-		print_verbose(".NET: Android platform detected. Setting api_assemblies_dir directly to pck path: " + api_assemblies_dir);
+		// Unahin ang external storage para sa assemblies kung mayroon man
+		if (DirAccess::exists("/storage/emulated/0/mono/assemblies")) {
+			api_assemblies_dir = "/storage/emulated/0/mono/assemblies";
+		} else if (DirAccess::exists("/storage/emulated/0/mono")) {
+			api_assemblies_dir = "/storage/emulated/0/mono";
+		} else {
+			api_assemblies_dir = packed_path;
+		}
+		print_verbose(".NET: Android platform detected. Setting api_assemblies_dir to: " + api_assemblies_dir);
 #else
 		if (DirAccess::exists(packed_path)) {
 			// The dotnet publish data is packed in the pck/zip.
@@ -230,7 +271,7 @@ private:
 			api_assemblies_dir = data_dir_root;
 		}
 #endif // ANDROID_ENABLED
-#endif
+#endif // TOOLS_ENABLED
 	}
 
 public:
