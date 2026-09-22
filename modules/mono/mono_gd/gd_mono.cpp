@@ -675,11 +675,10 @@ void GDMono::initialize() {
 	GDMonoCache::ManagedCallbacks managed_callbacks{};
 	void *godot_dll_handle = nullptr;
 
-	// CRITICAL ANDROID FIX: Sa Android, kailangan ang totoong handle ng libgodot_android.so
-	// gamit ang dladdr, dahil ang dlopen(nullptr) ay nagbabalik ng Android Zygote (/system/bin/app_process64).
+	// FIX: Non-member function pointer (_on_core_api_assembly_loaded) ang ipinasa sa dladdr
 #if defined(ANDROID_ENABLED)
 	Dl_info dl_info;
-	if (dladdr((void *)&GDMono::initialize, &dl_info) && dl_info.dli_fname) {
+	if (dladdr((const void *)&_on_core_api_assembly_loaded, &dl_info) && dl_info.dli_fname) {
 		godot_dll_handle = dlopen(dl_info.dli_fname, RTLD_NOW);
 	}
 	if (!godot_dll_handle) {
