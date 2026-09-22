@@ -1,4 +1,4 @@
-name: Build Android (Mono / C# Enabled)
+ name: Build Android (Mono / C# Enabled)
 
 on:
   push:
@@ -77,6 +77,31 @@ jobs:
             ${{ runner.os }}-scons-android-mono-
           save-always: true
 
+      # STEP 1: I-build muna ang host Linux headless engine para mag-generate ng eksaktong C# glue
+      - name: Build Linux Headless Engine for Glue Generation
+        env:
+          SCONS_CACHE: ${{ github.workspace }}/.scons_cache/
+        run: |
+          echo "Building Linux headless editor to generate matching GodotSharp glue..."
+          scons platform=linuxbsd target=editor module_mono_enabled=yes dev_build=no -j$(nproc)
+
+          LINUX_BIN=$(find bin/ -name "godot.linuxbsd.editor*" -type f | head -n 1)
+          chmod +x "$LINUX_BIN"
+          
+          echo "Generating GodotSharp glue using $LINUX_BIN..."
+          "$LINUX_BIN" --headless --generate-godot-sharp-glue modules/mono/glue
+
+      # STEP 2: I-compile ang C# Managed Assemblies (GodotSharp.dll, GodotPlugins.dll, atbp.)
+      - name: Build GodotSharp & GodotPlugins Assemblies
+        run: |
+          echo "Building managed GodotSharp and GodotPlugins assemblies..."
+          python3 modules/mono/build_scripts/build_assemblies.py --godot-output-dir=bin --precision=single
+
+          echo "Nabuong Godot assemblies:"
+          ls -la bin/GodotSharp/Api/Debug/ || true
+          ls -la bin/GodotSharp/Tools/ || true
+
+      # STEP 3: I-compile ang Android Native C++ Libraries
       - name: Build Android Native Libraries (SCons)
         env:
           SCONS_CACHE: ${{ github.workspace }}/.scons_cache/
@@ -94,7 +119,8 @@ jobs:
             scons_cache=$SCONS_CACHE \
             -j$(nproc)
 
-      - name: Download & Inject All .NET Native Libs (hostfxr, monosgen, coreclr, clrjit) into APK
+      # STEP 4: Kunin ang .NET Runtimes at I-bundle kasama ang GodotSharp Assemblies
+      - name: Inject Runtimes & Godot Assemblies into APK and Bundle
         run: |
           ARCH="${{ inputs.arch_type || 'arm64' }}"
           
@@ -111,15 +137,15 @@ jobs:
 
           echo "Downloading .NET 8 Runtime packs for $DOTNET_RID..."
 
-          # 1. Download Mono Runtime Pack (libmonosgen-2.0.so + BCL DLLs)
+          # 1. Download Mono Runtime Pack (.so + BCL)
           curl -L -o mono_pack.zip "https://www.nuget.org/api/v2/package/Microsoft.NETCore.App.Runtime.Mono.${DOTNET_RID}/8.0.8" || true
           unzip -q mono_pack.zip -d mono_extracted || true
 
-          # 2. Download CoreCLR Runtime Pack (libcoreclr.so, libclrjit.so, libhostfxr.so, libhostpolicy.so)
+          # 2. Download CoreCLR Runtime Pack (.so)
           curl -L -o coreclr_pack.zip "https://www.nuget.org/api/v2/package/Microsoft.NETCore.App.Runtime.${DOTNET_RID}/8.0.8" || true
           unzip -q coreclr_pack.zip -d coreclr_extracted || true
 
-          # Ihanda ang mga target directory para sa Gradle jniLibs
+          # Target directories
           TARGET_DIRS=(
             "bin"
             "platform/android/java/editor/src/main/jniLibs/${ANDROID_ABI}"
@@ -135,28 +161,45 @@ jobs:
             mkdir -p "$dir"
           done
 
-          # 3. Kopyahin LAHAT ng .so files (monosgen, coreclr, clrjit, hostfxr, hostpolicy, atbp.) sa bawat target directory
-          echo "Copying all shared libraries (.so)..."
+          # Kopyahin lahat ng native .so files
+          echo "Copying runtime shared libraries (.so)..."
           find mono_extracted/ coreclr_extracted/ -name "*.so" | while read so_file; do
-            echo "Found native library: $so_file"
             for dir in "${TARGET_DIRS[@]}"; do
               cp -v "$so_file" "$dir/"
             done
           done
 
-          # 4. Kopyahin ang mga BCL DLLs (System.*.dll)
+          # Target asset & storage paths
           ASSETS_DIR="platform/android/java/editor/src/main/assets/mono/assemblies"
+          PHONE_STORAGE="build_output/mono_bundle/mono"
           mkdir -p "$ASSETS_DIR"
-          mkdir -p "build_output/mono_bundle/mono/assemblies"
-          
+          mkdir -p "$PHONE_STORAGE/assemblies"
+          mkdir -p "$PHONE_STORAGE/GodotSharp/Api/Debug"
+          mkdir -p "$PHONE_STORAGE/GodotSharp/Tools"
+
+          # 3. Kopyahin ang .NET BCL DLLs
+          echo "Copying .NET BCL assemblies..."
           find mono_extracted/ coreclr_extracted/ -name "*.dll" | while read dll_file; do
             cp "$dll_file" "$ASSETS_DIR/"
-            cp "$dll_file" "build_output/mono_bundle/mono/assemblies/"
+            cp "$dll_file" "$PHONE_STORAGE/assemblies/"
           done
 
-          echo "Listahan ng mga na-inject na native libraries sa jniLibs:"
-          ls -la platform/android/java/editor/src/main/jniLibs/${ANDROID_ABI}/
+          # 4. Kopyahin ang fresh GodotSharp at GodotPlugins DLLs
+          echo "Injecting generated GodotSharp & GodotPlugins assemblies..."
+          if [ -d "bin/GodotSharp" ]; then
+            cp -rf bin/GodotSharp/Api/Debug/*.dll "$ASSETS_DIR/" || true
+            cp -rf bin/GodotSharp/Api/Debug/*.dll "$PHONE_STORAGE/assemblies/" || true
+            cp -rf bin/GodotSharp/Api/Debug/*.dll "$PHONE_STORAGE/GodotSharp/Api/Debug/" || true
 
+            cp -rf bin/GodotSharp/Tools/* "$ASSETS_DIR/" || true
+            cp -rf bin/GodotSharp/Tools/* "$PHONE_STORAGE/assemblies/" || true
+            cp -rf bin/GodotSharp/Tools/* "$PHONE_STORAGE/GodotSharp/Tools/" || true
+          fi
+
+          echo "Assemblies inside assets/mono/assemblies:"
+          ls -la "$ASSETS_DIR" | grep -E "Godot|System" | head -n 20
+
+      # STEP 5: Package APK gamit ang Gradle
       - name: Package Android APK (Official Godot Gradle Task)
         run: |
           TARGET="${{ inputs.target_type || 'editor' }}"
@@ -175,10 +218,10 @@ jobs:
         run: |
           mkdir -p build_output/apk/
           
-          # Hanapin at kopyahin ang nabuong APK
+          # Hanapin at kopyahin ang APK
           find bin/ platform/android/java -name "*.apk" -exec cp -v {} build_output/apk/ \;
           
-          # I-archive ang phone storage bundle (kung sakaling gustong i-manual extract sa /storage/emulated/0/mono)
+          # I-archive ang phone storage bundle para sa /storage/emulated/0/mono/
           cd build_output/mono_bundle
           zip -r ../mono_phone_storage.zip mono/
           cd ../..
@@ -193,6 +236,8 @@ jobs:
           if [ -n "$APK_FILE" ]; then
             echo "Inspecting all native .so libraries inside $APK_FILE:"
             unzip -l "$APK_FILE" | grep -E "\.so$" || true
+            echo "Inspecting Godot assemblies inside $APK_FILE:"
+            unzip -l "$APK_FILE" | grep -E "GodotPlugins\.dll|GodotSharp\.dll" || true
           fi
 
       - name: Upload Godot Editor APK
