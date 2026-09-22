@@ -78,16 +78,21 @@ jobs:
           echo "ANDROID_NDK_ROOT=$ANDROID_NDK_LATEST" >> $GITHUB_ENV
 
       # 3. I-compile ang Android Editor Native Library
-      - name: Build Android Native Libraries (SCons)
+      # 3. I-compile ang Android Editor gamit ang FAST MODE
+      - name: Build Android Native Libraries (SCons Fast Mode)
         run: |
           ARCH="${{ inputs.arch_type }}"
           ARCH="${ARCH:-arm64}"
           
-          echo "Building Godot Editor for Android ($ARCH)..."
+          echo "Building Godot 4.3 Android Editor ($ARCH) in FAST MODE..."
+          
           scons platform=android \
             target=editor \
             arch=$ARCH \
             module_mono_enabled=yes \
+            scu_build=yes \
+            debug_symbols=no \
+            fast_unsafe=yes \
             ANDROID_NDK_ROOT=$ANDROID_NDK_ROOT \
             -j$(nproc)
 
