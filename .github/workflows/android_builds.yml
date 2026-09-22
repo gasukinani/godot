@@ -1,4 +1,4 @@
-name: Build Godot 4.3 Android Editor (Mono / C#)
+name: Fast Build Godot 4.3 Android Editor (Mono / C#)
 
 on:
   push:
@@ -22,20 +22,12 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Free Disk Space (Ubuntu Runner)
-        run: |
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /usr/local/lib/android
-          sudo rm -rf /opt/ghc
-          sudo rm -rf /opt/hostedtoolcache/CodeQL
-
-      # 1. Checkout repository kung nasaan ang custom files mo
+      # 1. Checkout repos
       - name: Checkout Custom Repository
         uses: actions/checkout@v4
         with:
           path: 'custom_repo'
 
-      # 2. Checkout opisyal na Godot 4.3-stable
       - name: Checkout Official Godot 4.3-stable
         uses: actions/checkout@v4
         with:
@@ -44,7 +36,7 @@ jobs:
           path: 'godot_src'
           submodules: recursive
 
-      # 3. Setup Dependencies
+      # 2. Setup Environment
       - name: Set up Java JDK 17
         uses: actions/setup-java@v4
         with:
@@ -56,78 +48,89 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      - name: Set up Python 3.x
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Install SCons and Build Dependencies
+      - name: Install Build Tools
         run: |
-          sudo apt-get update
-          sudo apt-get install -y scons pkg-config yasm unzip curl zip libx11-dev libxcursor-dev \
-            libxinerama-dev libgl1-mesa-dev libglu-dev libasound2-dev libpulse-dev libudev-dev \
-            libxi-dev libxrandr-dev
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq scons pkg-config yasm unzip curl
           python3 -m pip install --upgrade pip
           pip3 install scons
 
-      - name: Locate & Configure Android NDK
+      - name: Configure Android NDK
         run: |
           ANDROID_NDK_LATEST=$(find $ANDROID_SDK_ROOT/ndk -maxdepth 1 -mindepth 1 | sort -V | tail -n 1)
           echo "Found Android NDK at: $ANDROID_NDK_LATEST"
           echo "ANDROID_NDK_ROOT=$ANDROID_NDK_LATEST" >> $GITHUB_ENV
 
+      # 3. SCons Cache para mabilis ang re-builds
+      - name: Setup SCons Cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.scons_cache/
+          key: ${{ runner.os }}-scons-godot43-android-${{ github.ref }}-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-scons-godot43-android-
+
       # 4. Patch mono_configure.py at gd_mono.cpp
-      - name: Patch Godot Mono for Android Editor
+      - name: Patch Mono for Android Editor
         run: |
-          echo "Patching mono_configure.py to allow android editor..."
-          # Tiyaking pinapayagan ang Android sa module_supports_tools_on at configure()
+          echo "Patching mono_configure.py..."
           sed -i 's/def module_supports_tools_on(platform):/def module_supports_tools_on(platform):\n    if platform == "android": return True/' godot_src/modules/mono/build_scripts/mono_configure.py
           sed -i 's/"windows", "macos", "linuxbsd"/"windows", "macos", "linuxbsd", "android"/g' godot_src/modules/mono/build_scripts/mono_configure.py
           
-          # Kopyahin ang custom gd_mono.cpp mo
           if [ -f "custom_repo/modules/mono/mono_gd/gd_mono.cpp" ]; then
-            echo "Copying custom gd_mono.cpp..."
+            echo "Injecting custom gd_mono.cpp..."
             cp -fv custom_repo/modules/mono/mono_gd/gd_mono.cpp godot_src/modules/mono/mono_gd/gd_mono.cpp
           fi
 
-          # Kung may na-save kang mono_configure.py sa custom repo, i-apply ito
           if [ -f "custom_repo/modules/mono/build_scripts/mono_configure.py" ]; then
-            echo "Applying mono_configure.py from custom_repo..."
             cp -fv custom_repo/modules/mono/build_scripts/mono_configure.py godot_src/modules/mono/build_scripts/mono_configure.py
           fi
 
-      # 5. I-generate ang Mono Glue (Kailangan para hindi magka-API Hash Mismatch)
-      - name: Generate Mono Glue
+      # 5. INSTANT GLUE GENERATION (10 seconds lang gamit ang official binary!)
+      - name: Generate Mono Glue (Instant via Official Binary)
         run: |
           cd godot_src
-          echo "Building headless Linux editor to generate C# API Glue..."
-          scons platform=linuxbsd target=editor module_mono_enabled=yes mono_glue=no -j$(nproc)
+          echo "Downloading official Godot 4.3 Mono Linux binary..."
+          curl -L -o godot_mono.zip "https://github.com/godotengine/godot/releases/download/4.3-stable/Godot_v4.3-stable_mono_linux_x86_64.zip"
+          unzip -q godot_mono.zip
           
-          echo "Generating Mono Glue..."
-          ./bin/godot.linuxbsd.editor.x86_64.mono --headless --generate-mono-glue modules/mono/glue
+          OFFICIAL_BIN=$(find . -maxdepth 2 -name "Godot_v4.3-stable_mono_linux.x86_64" | head -n 1)
+          chmod +x "$OFFICIAL_BIN"
+          
+          echo "Extracting exact matching 4.3 Glue..."
+          "$OFFICIAL_BIN" --headless --generate-mono-glue modules/mono/glue
+          rm -f godot_mono.zip
 
-      # 6. I-compile ang Android Editor Native Library
+      # 6. Compile Android Native Libraries
       - name: Build Android Native Libraries (SCons)
+        env:
+          SCONS_CACHE: ${{ github.workspace }}/.scons_cache/
+          SCONS_CACHE_LIMIT: 8192
         run: |
           cd godot_src
           ARCH="${{ inputs.arch_type || 'arm64' }}"
-          echo "Building Godot 4.3 Android Editor for $ARCH..."
+          echo "Compiling Godot 4.3 Android Editor for $ARCH..."
           
           scons platform=android \
             target=editor \
             arch=$ARCH \
             module_mono_enabled=yes \
+            scons_cache=$SCONS_CACHE \
             -j$(nproc)
 
-      # 7. I-build ang C# Managed Assemblies (GodotSharp.dll, GodotPlugins.dll)
+      # 7. Build C# Assemblies
       - name: Build C# Managed Assemblies
         run: |
           cd godot_src
-          echo "Compiling GodotSharp & GodotPlugins C# libraries..."
           python3 modules/mono/build_scripts/build_assemblies.py --godot-output-dir=./bin
 
-      # 8. I-download at i-inject ang .NET 8 Runtime para sa Android
-      - name: Inject .NET 8 Mono Runtime Libraries
+      # 8. Inject .NET 8 Runtime para sa Android
+      - name: Inject .NET 8 Runtime Libraries
         run: |
           cd godot_src
           ARCH="${{ inputs.arch_type || 'arm64' }}"
@@ -143,34 +146,23 @@ jobs:
             ANDROID_ABI="x86_64"
           fi
 
-          echo "Downloading .NET 8 Mono Runtime for $DOTNET_RID..."
+          echo "Downloading .NET 8 Runtime for $DOTNET_RID..."
           curl -L -o mono_pack.zip "https://www.nuget.org/api/v2/package/Microsoft.NETCore.App.Runtime.Mono.${DOTNET_RID}/8.0.8"
           unzip -q mono_pack.zip -d mono_extracted
 
-          TARGET_DIRS=(
-            "bin"
-            "platform/android/java/editor/src/main/jniLibs/${ANDROID_ABI}"
-            "platform/android/java/lib/src/main/jniLibs/${ANDROID_ABI}"
-            "platform/android/java/app/src/main/jniLibs/${ANDROID_ABI}"
-          )
-
-          for dir in "${TARGET_DIRS[@]}"; do
-            mkdir -p "$dir"
-          done
-
-          echo "Copying runtime .so files into Android build folders..."
+          mkdir -p platform/android/java/editor/src/main/jniLibs/${ANDROID_ABI}
           find mono_extracted/ -name "*.so" -exec cp -v {} "platform/android/java/editor/src/main/jniLibs/${ANDROID_ABI}/" \;
 
-      # 9. I-package ang Android Editor APK gamit ang Gradle
+      # 9. Package APK gamit ang Gradle
       - name: Package Android APK
         run: |
           cd godot_src/platform/android/java
           chmod +x ./gradlew
-          echo "Packaging Godot 4.3 Android Editor APK..."
+          echo "Packaging APK..."
           ./gradlew generateGodotEditor --stacktrace
 
-      # 10. I-upload ang Final APK
-      - name: Upload Android Editor APK
+      # 10. Upload Final APK
+      - name: Upload Godot Editor APK
         uses: actions/upload-artifact@v4
         with:
           name: godot-4.3-android-editor-mono
