@@ -5,58 +5,6 @@
 /*                             GODOT ENGINE                               */
 /*                        https://godotengine.org                         */
 /**************************************************************************/
-/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
-/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
-/*                                                                        */
-/* Permission is hereby granted, free of charge, to any person obtaining  */
-/* a copy of this software and associated documentation files (the        */
-/* "Software"), to deal in the Software without restriction, including    */
-/* without limitation the rights to use, copy, modify, merge, publish,    */
-/* distribute, sublicense, and/or sell copies of the Software, and to     */
-/* permit persons to whom the Software is furnished to do so, subject to  */
-/* the following conditions:                                              */
-/*                                                                        */
-/* The above copyright notice and this permission notice shall be         */
-/* included in all copies or substantial portions of the Software.        */
-/*                                                                        */
-/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
-/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
-/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
-/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
-/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
-/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
-/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
-/**************************************************************************/
-
-/*
-Adapted to Godot from the nethost library: https://github.com/dotnet/runtime/tree/main/src/native/corehost
-*/
-
-/*
-The MIT License (MIT)
-
-Copyright (c) .NET Foundation and Contributors
-
-All rights reserved.
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-*/
 
 #include "hostfxr_resolver.h"
 
@@ -72,10 +20,6 @@ SOFTWARE.
 #include <windows.h>
 #endif
 
-// We don't use libnethost as it gives us issues with some compilers.
-// This file tries to mimic libnethost's hostfxr_resolver search logic. We try to use the
-// same function names for easier comparing in case we need to update this in the future.
-
 namespace {
 
 String get_hostfxr_file_name() {
@@ -87,6 +31,31 @@ String get_hostfxr_file_name() {
 	return "libhostfxr.so";
 #endif
 }
+
+#if defined(ANDROID_ENABLED)
+// Helper: Kinokopya ang libhostfxr.so mula external storage papuntang internal storage para ligtas i-dlopen
+String prepare_android_fxr_lib(const String &p_src_path) {
+	if (!FileAccess::exists(p_src_path)) {
+		return String();
+	}
+	String internal_dir = OS::get_singleton()->get_user_data_dir().path_join("mono_libs");
+	DirAccess::make_dir_recursive_absolute(internal_dir);
+	String internal_path = internal_dir.path_join(get_hostfxr_file_name());
+
+	if (!FileAccess::exists(internal_path) || FileAccess::get_modified_time(p_src_path) > FileAccess::get_modified_time(internal_path)) {
+		Vector<uint8_t> data = FileAccess::get_file_as_bytes(p_src_path);
+		if (!data.is_empty()) {
+			Ref<FileAccess> dst = FileAccess::open(internal_path, FileAccess::WRITE);
+			if (dst.is_valid()) {
+				dst->store_buffer(data.ptr(), data.size());
+				dst->close();
+				print_verbose(".NET: Copied hostfxr to internal storage: " + internal_path);
+			}
+		}
+	}
+	return FileAccess::exists(internal_path) ? internal_path : String();
+}
+#endif
 
 bool get_latest_fxr(const String &fxr_root, String &r_fxr_path) {
 	godotsharp::SemVerParser sem_ver_parser;
@@ -125,10 +94,11 @@ bool get_latest_fxr(const String &fxr_root, String &r_fxr_path) {
 	String fxr_with_ver = Path::join(fxr_root, latest_ver_str);
 	String hostfxr_file_path = Path::join(fxr_with_ver, get_hostfxr_file_name());
 
-	ERR_FAIL_COND_V_MSG(!FileAccess::exists(hostfxr_file_path), false, "Missing hostfxr library in directory: " + fxr_with_ver);
+	if (!FileAccess::exists(hostfxr_file_path)) {
+		return false;
+	}
 
 	r_fxr_path = hostfxr_file_path;
-
 	return true;
 }
 
@@ -169,20 +139,17 @@ bool get_default_installation_dir(String &r_dotnet_root) {
 #if defined(WINDOWS_ENABLED)
 	String program_files_env;
 	if (is_wow64()) {
-		// Running x86 on x64, looking for x86 install
 		program_files_env = "ProgramFiles(x86)";
 	} else {
 		program_files_env = "ProgramFiles";
 	}
 
 	String program_files_dir = OS::get_singleton()->get_environment(program_files_env);
-
 	if (program_files_dir.is_empty()) {
 		return false;
 	}
 
 #if defined(__x86_64) || defined(__x86_64__) || defined(__amd64__) || defined(_M_X64)
-	// When emulating x64 on arm
 	String dotnet_root_emulated = Path::join(program_files_dir, "dotnet", "x64");
 	if (FileAccess::exists(Path::join(dotnet_root_emulated, "dotnet.exe"))) {
 		r_dotnet_root = dotnet_root_emulated;
@@ -196,17 +163,20 @@ bool get_default_installation_dir(String &r_dotnet_root) {
 	r_dotnet_root = "/usr/local/share/dotnet";
 
 #if defined(__x86_64) || defined(__x86_64__) || defined(__amd64__) || defined(_M_X64)
-	// When emulating x64 on arm
 	String dotnet_root_emulated = Path::join(r_dotnet_root, "x64");
 	if (FileAccess::exists(Path::join(dotnet_root_emulated, "dotnet"))) {
 		r_dotnet_root = dotnet_root_emulated;
 		return true;
 	}
 #endif
-
 	return true;
 #elif defined(ANDROID_ENABLED)
-	// Android default search path
+	// Safe Android check: Mag-return lamang ng true kung talagang umiiral ang directory
+	String internal_dir = OS::get_singleton()->get_user_data_dir().path_join("mono");
+	if (DirAccess::exists(internal_dir)) {
+		r_dotnet_root = internal_dir;
+		return true;
+	}
 	if (DirAccess::exists("/storage/emulated/0/mono")) {
 		r_dotnet_root = "/storage/emulated/0/mono";
 		return true;
@@ -214,8 +184,7 @@ bool get_default_installation_dir(String &r_dotnet_root) {
 		r_dotnet_root = "/sdcard/mono";
 		return true;
 	}
-	r_dotnet_root = "/storage/emulated/0/mono";
-	return true;
+	return false;
 #else
 	r_dotnet_root = "/usr/share/dotnet";
 	return true;
@@ -226,13 +195,11 @@ bool get_default_installation_dir(String &r_dotnet_root) {
 bool get_install_location_from_file(const String &p_file_path, String &r_dotnet_root) {
 	Error err = OK;
 	Ref<FileAccess> f = FileAccess::open(p_file_path, FileAccess::READ, &err);
-
 	if (f.is_null() || err != OK) {
 		return false;
 	}
 
 	String line = f->get_line();
-
 	if (line.is_empty()) {
 		return false;
 	}
@@ -278,7 +245,6 @@ bool get_dotnet_self_registered_dir(String &r_dotnet_root) {
 	}
 
 	if (FileAccess::exists(install_location_file)) {
-		// Don't try with the legacy location, this will fall back to the hard-coded default install location
 		return false;
 	}
 
@@ -289,16 +255,13 @@ bool get_dotnet_self_registered_dir(String &r_dotnet_root) {
 
 bool get_file_path_from_env(const String &p_env_key, String &r_dotnet_root) {
 	String env_value = OS::get_singleton()->get_environment(p_env_key);
-
 	if (!env_value.is_empty()) {
 		env_value = Path::realpath(env_value);
-
 		if (DirAccess::exists(env_value)) {
 			r_dotnet_root = env_value;
 			return true;
 		}
 	}
-
 	return false;
 }
 
@@ -307,26 +270,27 @@ bool get_dotnet_root_from_env(String &r_dotnet_root) {
 	String arch_for_env = get_dotnet_arch();
 
 	if (!arch_for_env.is_empty()) {
-		// DOTNET_ROOT_<arch>
 		if (get_file_path_from_env(dotnet_root_env + "_" + arch_for_env.to_upper(), r_dotnet_root)) {
 			return true;
 		}
 	}
 
 #ifdef WINDOWS_ENABLED
-	// WoW64-only: DOTNET_ROOT(x86)
 	if (is_wow64() && get_file_path_from_env("DOTNET_ROOT(x86)", r_dotnet_root)) {
 		return true;
 	}
 #endif
 
-	// DOTNET_ROOT
 	return get_file_path_from_env(dotnet_root_env, r_dotnet_root);
 }
 
-} //namespace
+} // namespace
 
 bool godotsharp::hostfxr_resolver::try_get_path_from_dotnet_root(const String &p_dotnet_root, String &r_fxr_path) {
+	if (p_dotnet_root.is_empty() || !DirAccess::exists(p_dotnet_root)) {
+		return false;
+	}
+
 	// 1. Tignan kung direktang nasa loob ng dotnet root ang hostfxr library
 	String direct_fxr = Path::join(p_dotnet_root, get_hostfxr_file_name());
 	if (FileAccess::exists(direct_fxr)) {
@@ -337,9 +301,6 @@ bool godotsharp::hostfxr_resolver::try_get_path_from_dotnet_root(const String &p
 	// 2. Standard .NET layout: <dotnet_root>/host/fxr/<version>/libhostfxr.so
 	String fxr_dir = Path::join(p_dotnet_root, "host", "fxr");
 	if (!DirAccess::exists(fxr_dir)) {
-		if (OS::get_singleton()->is_stdout_verbose()) {
-			ERR_PRINT("The host fxr folder does not exist: " + fxr_dir + ".");
-		}
 		return false;
 	}
 	return get_latest_fxr(fxr_dir, r_fxr_path);
@@ -347,7 +308,15 @@ bool godotsharp::hostfxr_resolver::try_get_path_from_dotnet_root(const String &p
 
 bool godotsharp::hostfxr_resolver::try_get_path(String &r_dotnet_root, String &r_fxr_path) {
 #if defined(ANDROID_ENABLED)
-	// Unahin i-check ang external storage paths sa Android
+	// 1. Unahin i-check kung mayroon nang handang libhostfxr.so sa internal storage
+	String internal_fxr = OS::get_singleton()->get_user_data_dir().path_join("mono_libs").path_join(get_hostfxr_file_name());
+	if (FileAccess::exists(internal_fxr)) {
+		r_dotnet_root = OS::get_singleton()->get_user_data_dir().path_join("mono");
+		r_fxr_path = internal_fxr;
+		return true;
+	}
+
+	// 2. I-check ang external storage paths at ligtas na kopyahin bago ibalik ang path
 	static const char *android_search_dirs[] = {
 		"/storage/emulated/0/mono",
 		"/sdcard/mono",
@@ -359,7 +328,11 @@ bool godotsharp::hostfxr_resolver::try_get_path(String &r_dotnet_root, String &r
 		if (DirAccess::exists(search_dir)) {
 			if (try_get_path_from_dotnet_root(search_dir, r_fxr_path)) {
 				r_dotnet_root = search_dir;
-				return true;
+				String safe_path = prepare_android_fxr_lib(r_fxr_path);
+				if (!safe_path.is_empty()) {
+					r_fxr_path = safe_path;
+					return true;
+				}
 			}
 		}
 	}
@@ -371,5 +344,14 @@ bool godotsharp::hostfxr_resolver::try_get_path(String &r_dotnet_root, String &r
 		return false;
 	}
 
-	return try_get_path_from_dotnet_root(r_dotnet_root, r_fxr_path);
+	bool found = try_get_path_from_dotnet_root(r_dotnet_root, r_fxr_path);
+#if defined(ANDROID_ENABLED)
+	if (found) {
+		String safe_path = prepare_android_fxr_lib(r_fxr_path);
+		if (!safe_path.is_empty()) {
+			r_fxr_path = safe_path;
+		}
+	}
+#endif
+	return found;
 }
