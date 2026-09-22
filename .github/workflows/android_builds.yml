@@ -87,6 +87,7 @@ jobs:
           
           echo "Building Godot Android for target: $TARGET, arch: $ARCH..."
           
+          # Inalis ang silent fallback; dapat mag-exit kapag may compilation error
           scons platform=android \
             target=$TARGET \
             arch=$ARCH \
@@ -102,21 +103,20 @@ jobs:
 
           if [ "$TARGET" = "editor" ]; then
             echo "Packaging Godot Android Editor APK..."
-            ./gradlew generateGodotEditor
+            ./gradlew generateGodotEditor --stacktrace
           else
             echo "Packaging Godot Android Export Template APK..."
-            ./gradlew generateGodotTemplates
+            ./gradlew generateGodotTemplates --stacktrace
           fi
 
       - name: Copy & Organize APK Outputs
         run: |
           mkdir -p build_output/
-          # Ang generateGodotEditor ay naglalagay ng APK diretso sa godot/bin/ folder
-          cp -v bin/*.apk build_output/ || true
-          # Mag-fallback sa pag-find kung sakaling may iba pang APK na nabuo
-          find . -name "*.apk" -exec cp -v {} build_output/ \; || true
           
-          # Kopyahin din ang .so libraries
+          # Hanapin at kopyahin ang nabuong APK mula sa bin o build/outputs
+          find bin/ platform/android/java -name "*.apk" -exec cp -v {} build_output/ \;
+          
+          # Kopyahin din ang mga .so library para sa verification
           mkdir -p build_output/libs/
           find bin/ -name "*android*.so" -exec cp -v {} build_output/libs/ \; || true
 
