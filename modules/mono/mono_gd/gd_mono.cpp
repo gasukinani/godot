@@ -156,6 +156,14 @@ String find_hostfxr() {
 	return String();
 #else
 
+#if defined(ANDROID_ENABLED)
+	String ext_fxr = "/storage/emulated/0/mono/libhostfxr.so";
+	if (FileAccess::exists(ext_fxr)) {
+		print_verbose(".NET: Found hostfxr in external storage: " + ext_fxr);
+		return ext_fxr;
+	}
+#endif
+
 #if defined(WINDOWS_ENABLED)
 	String probe_path = GodotSharpDirs::get_api_assemblies_dir()
 								.path_join("hostfxr.dll");
@@ -181,8 +189,14 @@ String find_hostfxr() {
 #ifndef TOOLS_ENABLED
 String find_monosgen() {
 #if defined(ANDROID_ENABLED)
-	// Android includes all native libraries in the libs directory of the APK
-	// so we assume it exists and use only the name to dlopen it.
+	// 1. Tignan muna sa custom external storage /storage/emulated/0/mono/
+	String external_path = "/storage/emulated/0/mono/libmonosgen-2.0.so";
+	if (FileAccess::exists(external_path)) {
+		print_verbose(".NET: Found custom monosgen in: " + external_path);
+		return external_path;
+	}
+
+	// 2. Android fallback: native libraries in the libs directory of the APK
 	return "libmonosgen-2.0.so";
 #else
 #if defined(WINDOWS_ENABLED)
@@ -207,6 +221,14 @@ String find_monosgen() {
 }
 
 String find_coreclr() {
+#if defined(ANDROID_ENABLED)
+	String external_path = "/storage/emulated/0/mono/libcoreclr.so";
+	if (FileAccess::exists(external_path)) {
+		print_verbose(".NET: Found custom coreclr in: " + external_path);
+		return external_path;
+	}
+#endif
+
 #if defined(WINDOWS_ENABLED)
 	String probe_path = GodotSharpDirs::get_api_assemblies_dir()
 								.path_join("coreclr.dll");
@@ -467,7 +489,8 @@ godot_plugins_initialize_fn try_load_native_aot_library(void *&r_aot_dll_handle)
 #elif defined(MACOS_ENABLED) || defined(APPLE_EMBEDDED_ENABLED)
 	String native_aot_so_path = GodotSharpDirs::get_api_assemblies_dir().path_join(assembly_name + ".dylib");
 #elif defined(ANDROID_ENABLED)
-	String native_aot_so_path = "lib" + assembly_name + ".so";
+	String ext_aot = "/storage/emulated/0/mono/lib" + assembly_name + ".so";
+	String native_aot_so_path = FileAccess::exists(ext_aot) ? ext_aot : ("lib" + assembly_name + ".so");
 #elif defined(UNIX_ENABLED)
 	String native_aot_so_path = GodotSharpDirs::get_api_assemblies_dir().path_join(assembly_name + ".so");
 #else
@@ -508,8 +531,19 @@ MonoAssembly *load_assembly_from_pck(MonoAssemblyName *p_assembly_name, char **p
 		assembly_name += ".dll";
 	}
 
-	String path = GodotSharpDirs::get_api_assemblies_dir();
-	path = path.path_join(assembly_name);
+	// 1. Unahin ang /storage/emulated/0/mono/assemblies/ o /storage/emulated/0/mono/
+	String ext_path_assemblies = "/storage/emulated/0/mono/assemblies/".path_join(assembly_name);
+	String ext_path_root = "/storage/emulated/0/mono/".path_join(assembly_name);
+	String path;
+
+	if (FileAccess::exists(ext_path_assemblies)) {
+		path = ext_path_assemblies;
+	} else if (FileAccess::exists(ext_path_root)) {
+		path = ext_path_root;
+	} else {
+		// 2. Default fallback sa internal game directories / pck
+		path = GodotSharpDirs::get_api_assemblies_dir().path_join(assembly_name);
+	}
 
 	print_verbose(".NET: Loading assembly '" + assembly_name + "' from '" + path + "'.");
 
@@ -615,8 +649,18 @@ void GDMono::initialize() {
 
 #if !defined(APPLE_EMBEDDED_ENABLED)
 	// Check that the .NET assemblies directory exists before trying to use it.
-	if (!DirAccess::exists(GodotSharpDirs::get_api_assemblies_dir())) {
-		OS::get_singleton()->alert(vformat(RTR("Unable to find the .NET assemblies directory.\nMake sure the '%s' directory exists and contains the .NET assemblies."), GodotSharpDirs::get_api_assemblies_dir()), RTR(".NET assemblies not found"));
+	String assemblies_dir = GodotSharpDirs::get_api_assemblies_dir();
+	bool dir_exists = DirAccess::exists(assemblies_dir);
+
+#if defined(ANDROID_ENABLED)
+	// Kung wala sa default path pero may /storage/emulated/0/mono/, payagan mag-proceed
+	if (!dir_exists && DirAccess::exists("/storage/emulated/0/mono")) {
+		dir_exists = true;
+	}
+#endif
+
+	if (!dir_exists) {
+		OS::get_singleton()->alert(vformat(RTR("Unable to find the .NET assemblies directory.\nMake sure the '%s' directory exists and contains the .NET assemblies."), assemblies_dir), RTR(".NET assemblies not found"));
 		ERR_FAIL_MSG(".NET: Assemblies not found");
 	}
 #endif
@@ -640,7 +684,6 @@ void GDMono::initialize() {
 			ERR_FAIL_MSG(".NET: Failed to load hostfxr");
 		}
 #else
-
 		// Show a message box to the user to make the problem explicit (and explain a potential crash).
 		OS::get_singleton()->alert(TTR("Unable to load .NET runtime, specifically hostfxr.\nAttempting to create/edit a project will lead to a crash.\n\nPlease install the .NET SDK 8.0 or later from https://get.dot.net and restart Godot."), TTR("Failed to load .NET runtime"));
 		ERR_FAIL_MSG(".NET: Failed to load hostfxr");
