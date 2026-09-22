@@ -75,21 +75,15 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-scons-godot43-android-
 
-      # 4. Patch mono_configure.py at gd_mono.cpp
+      # 4. Kopyahin ang LAHAT ng custom Mono files mula sa iyong repo
       - name: Patch Mono for Android Editor
         run: |
-          echo "Patching mono_configure.py..."
+          echo "Copying entire custom modules/mono (including thirdparty/mono_delegates.h)..."
+          cp -rfv custom_repo/modules/mono/* godot_src/modules/mono/
+
+          echo "Ensuring mono_configure.py allows android editor..."
           sed -i 's/def module_supports_tools_on(platform):/def module_supports_tools_on(platform):\n    if platform == "android": return True/' godot_src/modules/mono/build_scripts/mono_configure.py
           sed -i 's/"windows", "macos", "linuxbsd"/"windows", "macos", "linuxbsd", "android"/g' godot_src/modules/mono/build_scripts/mono_configure.py
-          
-          if [ -f "custom_repo/modules/mono/mono_gd/gd_mono.cpp" ]; then
-            echo "Injecting custom gd_mono.cpp..."
-            cp -fv custom_repo/modules/mono/mono_gd/gd_mono.cpp godot_src/modules/mono/mono_gd/gd_mono.cpp
-          fi
-
-          if [ -f "custom_repo/modules/mono/build_scripts/mono_configure.py" ]; then
-            cp -fv custom_repo/modules/mono/build_scripts/mono_configure.py godot_src/modules/mono/build_scripts/mono_configure.py
-          fi
 
       # 5. INSTANT GLUE GENERATION (10 seconds lang gamit ang official binary!)
       - name: Generate Mono Glue (Instant via Official Binary)
