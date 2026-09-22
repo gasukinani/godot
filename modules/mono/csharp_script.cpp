@@ -1,4 +1,4 @@
- /**************************************************************************/
+/**************************************************************************/
 /*  csharp_script.cpp                                                     */
 /**************************************************************************/
 /*                         This file is part of:                          */
@@ -14,11 +14,11 @@
 #include "signal_awaiter_utils.h"
 #include "utils/macros.h"
 #include "utils/naming_utils.h"
+#include "utils/path_utils.h"
 #include "utils/string_utils.h"
 
 #ifdef GD_MONO_HOT_RELOAD
 #include "managed_callable.h"
-#include "utils/path_utils.h"
 #endif
 
 #ifdef DEBUG_ENABLED
@@ -220,7 +220,6 @@ bool CSharpLanguage::is_using_templates() {
 }
 
 #ifdef TOOLS_ENABLED
-// Awtomatikong gumagawa ng .csproj at .sln para hindi na mag-crash ang GodotTools sa Android
 static void _ensure_csharp_project_files_exist() {
 	if (!Engine::get_singleton()->is_editor_hint()) {
 		return;
@@ -228,8 +227,12 @@ static void _ensure_csharp_project_files_exist() {
 
 	String project_name = Path::get_csharp_project_name();
 	if (project_name.is_empty()) {
+		project_name = GLOBAL_GET("application/config/name");
+	}
+	if (project_name.is_empty()) {
 		project_name = "Game";
 	}
+	project_name = project_name.replace(" ", "_");
 
 	String csproj_path = ProjectSettings::get_singleton()->globalize_path("res://" + project_name + ".csproj");
 	String sln_path = ProjectSettings::get_singleton()->globalize_path("res://" + project_name + ".sln");
@@ -288,7 +291,6 @@ static void _ensure_csharp_project_files_exist() {
 
 Ref<Script> CSharpLanguage::make_template(const String &p_template, const String &p_class_name, const String &p_base_class_name) const {
 #ifdef TOOLS_ENABLED
-	// Awtomatikong buuin ang .csproj at .sln para hindi na mag-crash ang GodotTools
 	_ensure_csharp_project_files_exist();
 #endif
 
@@ -1955,7 +1957,6 @@ bool CSharpScript::can_instantiate() const {
 	bool extra_cond = true;
 #endif
 
-	// Safe Guard: Kung hindi pa compiled o bago ang .cs file, huwag mag-ERR_FAIL_V_MSG para hindi mag-crash ang editor
 	if (!valid) {
 		return false;
 	}
@@ -2079,7 +2080,6 @@ PlaceHolderScriptInstance *CSharpScript::placeholder_instance_create(Object *p_t
 #ifdef TOOLS_ENABLED
 	PlaceHolderScriptInstance *si = memnew(PlaceHolderScriptInstance(CSharpLanguage::get_singleton(), Ref<Script>(this), p_this));
 	placeholders.insert(si);
-	// Safe Guard: I-update lamang ang exports kung compiled/valid na ang klase sa assembly
 	if (valid) {
 		_update_exports(si);
 	}
