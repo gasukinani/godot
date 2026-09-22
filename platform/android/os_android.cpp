@@ -191,7 +191,6 @@ bool OS_Android::copy_dynamic_library(const String &p_library_path, const String
 	String copy_path = p_target_dir.path_join(p_library_path.get_file());
 	bool copy_exists = FileAccess::exists(copy_path);
 
-	// Kung existing na at pareho o mas bago ang cache, gamitin agad nang hindi nagre-recopy
 	if (copy_exists) {
 		if (FileAccess::get_modified_time(copy_path) >= FileAccess::get_modified_time(p_library_path)) {
 			if (r_copy_path != nullptr) {
@@ -227,10 +226,8 @@ Error OS_Android::open_dynamic_library(const String &p_path, void *&p_library_ha
 		so_file_exists = false;
 	}
 
-	// Subukang buksan muna gamit ang dlopen
 	p_library_handle = dlopen(path.utf8().get_data(), RTLD_NOW);
 
-	// Kapag nag-fail ang dlopen (halimbawa dahil nasa /storage/emulated/0/ na may noexec flag):
 	if (!p_library_handle && so_file_exists) {
 		const String dynamic_library_path = get_dynamic_libraries_path();
 
@@ -252,7 +249,6 @@ Error OS_Android::open_dynamic_library(const String &p_path, void *&p_library_ha
 		String internal_path;
 		print_verbose("Copying library to internal cache: " + p_path);
 
-		// Siguraduhing sa dynamic_library_path diretso pupunta ang library file
 		const bool internal_so_file_exists = copy_dynamic_library(p_path, dynamic_library_path, &internal_path);
 
 		if (internal_so_file_exists) {
@@ -890,7 +886,6 @@ bool OS_Android::_check_internal_feature_support(const String &p_feature) {
 		return true;
 	}
 
-	// Suporta sa "dotnet" feature flag kapag may mono directory sa Android
 	if (p_feature == "dotnet") {
 		if (DirAccess::exists("/storage/emulated/0/mono") || DirAccess::exists("/sdcard/mono")) {
 			return true;
@@ -946,11 +941,16 @@ OS_Android::OS_Android(GodotJavaWrapper *p_godot_java, GodotIOJavaWrapper *p_god
 	DisplayServerAndroid::register_android_driver();
 }
 
+// CRASH FIX: Sa Android, bawal tumawag ng OS_Unix::execute/create_process para sa arbitrary external commands
+// dahil nagko-call ito ng fork(), na nagti-trigger ng fatal abort sa multi-threaded Android runtime.
 Error OS_Android::execute(const String &p_path, const List<String> &p_arguments, String *r_pipe, int *r_exitcode, bool read_stderr, Mutex *p_pipe_mutex, bool p_open_console) {
 	if (p_path == ANDROID_EXEC_PATH) {
 		return create_instance(p_arguments);
 	} else {
-		return OS_Unix::execute(p_path, p_arguments, r_pipe, r_exitcode, read_stderr, p_pipe_mutex, p_open_console);
+		if (r_exitcode) {
+			*r_exitcode = -1;
+		}
+		return ERR_UNAVAILABLE;
 	}
 }
 
@@ -958,7 +958,7 @@ Error OS_Android::create_process(const String &p_path, const List<String> &p_arg
 	if (p_path == ANDROID_EXEC_PATH) {
 		return create_instance(p_arguments, r_child_id);
 	} else {
-		return OS_Unix::create_process(p_path, p_arguments, r_child_id, p_open_console);
+		return ERR_UNAVAILABLE;
 	}
 }
 
@@ -994,7 +994,7 @@ Error OS_Android::setup_remote_filesystem(const String &p_server_host, int p_por
 	Error err = OS_Unix::setup_remote_filesystem(p_server_host, p_port, p_password, r_project_path);
 	if (err == OK) {
 		remote_fs_dir = r_project_path;
-		FileAccess::make_default<FileAccessFilesystemJAndroid>(FileAccess::ACCESS_RESOURCES);
+		FileAccess::make_default<FileAccessFilesystemJAndroid>(FileAccess::ACCESS_FILESYSTEM);
 	}
 	return err;
 }
