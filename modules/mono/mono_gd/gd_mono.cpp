@@ -610,9 +610,6 @@ GDMono::~GDMono() {
 
 namespace mono_bind {
 GodotSharp *GodotSharp::singleton = nullptr;
-#ifdef GD_MONO_HOT_RELOAD
-void GodotSharp::reload_assemblies() {}
-#endif
 GodotSharp::GodotSharp() { singleton = this; }
 GodotSharp::~GodotSharp() { singleton = nullptr; }
 } // namespace mono_bind
