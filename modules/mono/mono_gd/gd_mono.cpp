@@ -95,7 +95,7 @@ String prepare_android_executable_lib(const String &p_filename) {
 			if (dst.is_valid()) {
 				dst->store_buffer(data.ptr(), data.size());
 				dst->close();
-				write_mono_log(".NET: Copied " + p_filename + " to internal storage: " + internal_path);
+				write_mono_log(".NET: Copied " + p_filename + " to internal storage.");
 			}
 		}
 	}
@@ -482,7 +482,7 @@ void GDMono::initialize() {
 	godot_dll_handle = dlopen(nullptr, RTLD_NOW);
 #endif
 
-	write_mono_log(vformat(".NET: godot_dll_handle resolved to: %p", godot_dll_handle));
+	write_mono_log(vformat(".NET: godot_dll_handle resolved to: 0x%X", (uint64_t)godot_dll_handle));
 
 #ifdef DEBUG_ENABLED
 	write_mono_log(vformat(".NET: C++ API Core Hash: 0x%X", (uint64_t)get_api_core_hash()));
@@ -567,7 +567,7 @@ uint64_t GDMono::get_api_editor_hash() {
 #ifdef TOOLS_ENABLED
 bool GDMono::_load_project_assembly() {
 	if (!initialized) {
-		return false; // Pangontra sa crash kapag hindi pa initialized ang .NET!
+		return false;
 	}
 
 	String assembly_name = Path::get_csharp_project_name();
