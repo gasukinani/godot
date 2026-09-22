@@ -1,55 +1,147 @@
-name: Android Mono / .NET Build
+name: Build Android (Mono / C# Enabled)
 
 on:
   push:
     branches: [ master, main ]
+  pull_request:
+    branches: [ master, main ]
   workflow_dispatch:
+    inputs:
+      target_type:
+        description: 'Target Build (editor o template_release)'
+        required: true
+        default: 'editor'
+        type: choice
+        options:
+          - editor
+          - template_release
+      arch_type:
+        description: 'Architecture'
+        required: true
+        default: 'arm64'
+        type: choice
+        options:
+          - arm64
+          - arm32
+          - x86_64
 
 jobs:
   build-android-mono:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout Source
-        uses: actions/checkout@v4
+    runs-on: ubuntu-22.04
 
-      - name: Set up Java JDK
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Java JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Set up Android SDK & NDK
-        uses: android-actions/setup-android@v3
-
-      - name: Set up .NET SDK
+      - name: Set up .NET 8 SDK
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
 
-      - name: Install Dependencies
+      - name: Set up Python 3.x
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install SCons & Build Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y scons pkg-config libx11-dev libxcursor-dev libxinerama-dev libgl1-mesa-dev libglu-dev libasound2-dev libpulse-dev libudev-dev libxi-dev
+          sudo apt-get install -y scons pkg-config libx11-dev libxcursor-dev \
+            libxinerama-dev libgl1-mesa-dev libglu-dev libasound2-dev \
+            libpulse-dev libudev-dev libxi-dev yasm
+          python -m pip install --upgrade pip
+          pip install scons
 
-      - name: Download & Extract Prebuilt Mono/CoreCLR Runtimes
+      - name: Locate & Configure Android NDK
         run: |
-          # Gumawa ng directory para sa thirdparty runtime artifacts
-          mkdir -p bin/mono_bundle
-          
-          # Halimbawa: I-download ang official prebuilt Mono Android bundle o .NET Android runtime packs
-          # Pwede mong palitan ang URL ng specific release tarball mo:
-          echo "Preparing Mono Android runtime dependencies..."
-          
-          # Halimbawa kung may custom prebuilt release tarball ka:
-          # curl -L -o mono_android.tar.gz "https://github.com/godotengine/godot-mono-builds/releases/download/.../mono_android.tar.gz"
-          # tar -xzf mono_android.tar.gz -C bin/mono_bundle/
+          # Awtomatikong hanapin ang pinakabagong naka-install na NDK sa GitHub runner
+          ANDROID_NDK_LATEST=$(find $ANDROID_SDK_ROOT/ndk -maxdepth 1 -mindepth 1 | sort -V | tail -n 1)
+          echo "Found Android NDK at: $ANDROID_NDK_LATEST"
+          echo "ANDROID_NDK_ROOT=$ANDROID_NDK_LATEST" >> $GITHUB_ENV
 
-      - name: Compile Godot Android with Mono Module
+      - name: Setup SCons Cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ github.workspace }}/.scons_cache/
+          key: ${{ runner.os }}-scons-android-mono-${{ github.ref }}-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-scons-android-mono-${{ github.ref }}-
+            ${{ runner.os }}-scons-android-mono-
+
+      - name: Check / Generate Mono Glue
         run: |
-          scons platform=android target=template_release arch=arm64 module_mono_enabled=yes -j$(nproc)
+          # Kung wala pang glue files sa repo, mag-compile muna ng headless linux binary para mag-generate ng glue
+          if [ ! -f "modules/mono/glue/runtime_interop.h" ]; then
+            echo "Mono glue not found! Building minimal host binary to generate glue..."
+            scons platform=linuxbsd target=editor module_mono_enabled=yes -j$(nproc)
+            ./bin/godot.linuxbsd.editor.x86_64.mono --headless --generate-mono-glue modules/mono/glue
+          else
+            echo "Mono glue already exists. Skipping glue generation."
+          fi
+
+      - name: Build Android Native Libraries (SCons)
+        env:
+          SCONS_CACHE: ${{ github.workspace }}/.scons_cache/
+          SCONS_CACHE_LIMIT: 8192
+        run: |
+          TARGET="${{ inputs.target_type || 'editor' }}"
+          ARCH="${{ inputs.arch_type || 'arm64' }}"
           
-      - name: Upload Build Artifacts
+          echo "Building Godot Android for target: $TARGET, arch: $ARCH..."
+          
+          scons platform=android \
+            target=$TARGET \
+            arch=$ARCH \
+            module_mono_enabled=yes \
+            scons_cache=$SCONS_CACHE \
+            -j$(nproc)
+
+      - name: Build C# Managed Assemblies (GodotSharp & Plugins)
+        run: |
+          if [ -f "./modules/mono/build_scripts/build_assemblies.py" ]; then
+            echo "Building GodotSharp managed assemblies..."
+            python ./modules/mono/build_scripts/build_assemblies.py --godot-output-dir=./bin
+          fi
+
+      - name: Package Android APK (Gradle)
+        run: |
+          TARGET="${{ inputs.target_type || 'editor' }}"
+          cd platform/android/java
+          chmod +x ./gradlew
+
+          if [ "$TARGET" = "editor" ]; then
+            echo "Building Godot Android Editor APK..."
+            ./gradlew assembleEditorRelease
+          else
+            echo "Building Godot Android Export Template APK..."
+            ./gradlew assembleTemplateRelease
+          fi
+
+      - name: Copy & Organize APK Outputs
+        run: |
+          mkdir -p build_output/
+          # Kopyahin ang mga nagawang APK mula sa gradle build folder
+          find platform/android/java/app/build/outputs/apk/ -name "*.apk" -exec cp {} build_output/ \;
+          # Kopyahin din ang mga .so libraries kung kailangan
+          mkdir -p build_output/libs/
+          find bin/ -name "*android*.so" -exec cp {} build_output/libs/ \; || true
+          # Kopyahin ang managed assemblies kung nabuo
+          if [ -d "bin/GodotSharp" ]; then
+            cp -r bin/GodotSharp build_output/
+          fi
+
+      - name: Upload APK & Build Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: godot-android-mono
-          path: bin/*android*
+          name: godot-android-mono-build
+          path: build_output/
+          if-no-files-found: error
