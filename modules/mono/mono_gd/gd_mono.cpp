@@ -65,22 +65,8 @@ hostfxr_initialize_for_runtime_config_fn hostfxr_initialize_for_runtime_config =
 hostfxr_get_runtime_delegate_fn hostfxr_get_runtime_delegate = nullptr;
 hostfxr_close_fn hostfxr_close = nullptr;
 
-typedef int(CORECLR_DELEGATE_CALLTYPE *coreclr_create_delegate_fn)(
-		void *hostHandle,
-		unsigned int domainId,
-		const char *entryPointAssemblyName,
-		const char *entryPointTypeName,
-		const char *entryPointMethodName,
-		void **delegate);
-
-typedef int(CORECLR_DELEGATE_CALLTYPE *coreclr_initialize_fn)(
-		const char *exePath,
-		const char *appDomainFriendlyName,
-		int propertyCount,
-		const char **propertyKeys,
-		const char **propertyValues,
-		void **hostHandle,
-		unsigned int *domainId);
+typedef int(CORECLR_DELEGATE_CALLTYPE *coreclr_create_delegate_fn)(void *hostHandle, unsigned int domainId, const char *entryPointAssemblyName, const char *entryPointTypeName, const char *entryPointMethodName, void **delegate);
+typedef int(CORECLR_DELEGATE_CALLTYPE *coreclr_initialize_fn)(const char *exePath, const char *appDomainFriendlyName, int propertyCount, const char **propertyKeys, const char **propertyValues, void **hostHandle, unsigned int *domainId);
 
 coreclr_create_delegate_fn coreclr_create_delegate = nullptr;
 coreclr_initialize_fn coreclr_initialize = nullptr;
@@ -237,22 +223,18 @@ bool load_coreclr(void *&r_coreclr_dll_handle) {
 	if (err == OK) {
 		mono_install_assembly_preload_hook = (mono_install_assembly_preload_hook_fn)symbol;
 	}
-
 	err = OS::get_singleton()->get_dynamic_library_symbol_handle(lib, "mono_assembly_name_get_name", symbol);
 	if (err == OK) {
 		mono_assembly_name_get_name = (mono_assembly_name_get_name_fn)symbol;
 	}
-
 	err = OS::get_singleton()->get_dynamic_library_symbol_handle(lib, "mono_assembly_name_get_culture", symbol);
 	if (err == OK) {
 		mono_assembly_name_get_culture = (mono_assembly_name_get_culture_fn)symbol;
 	}
-
 	err = OS::get_singleton()->get_dynamic_library_symbol_handle(lib, "mono_image_open_from_data_with_name", symbol);
 	if (err == OK) {
 		mono_image_open_from_data_with_name = (mono_image_open_from_data_with_name_fn)symbol;
 	}
-
 	err = OS::get_singleton()->get_dynamic_library_symbol_handle(lib, "mono_assembly_load_from_full", symbol);
 	if (err == OK) {
 		mono_assembly_load_from_full = (mono_assembly_load_from_full_fn)symbol;
@@ -401,18 +383,14 @@ godot_plugins_initialize_fn initialize_coreclr_and_godot_plugins(bool &r_runtime
 	write_mono_log(".NET: CoreCLR/Mono initialized successfully.");
 
 #ifdef TOOLS_ENABLED
-	int del_rc = coreclr_create_delegate(
-			coreclr_handle,
-			domain_id,
+	int del_rc = coreclr_create_delegate(coreclr_handle, domain_id,
 			"GodotPlugins",
 			"GodotPlugins.Main",
 			"InitializeFromEngine",
 			(void **)&godot_plugins_initialize);
 
 	if (del_rc != 0 || godot_plugins_initialize == nullptr) {
-		del_rc = coreclr_create_delegate(
-				coreclr_handle,
-				domain_id,
+		del_rc = coreclr_create_delegate(coreclr_handle, domain_id,
 				"GodotPlugins, Version=4.3.0.0, Culture=neutral, PublicKeyToken=null",
 				"GodotPlugins.Main",
 				"InitializeFromEngine",
@@ -420,9 +398,7 @@ godot_plugins_initialize_fn initialize_coreclr_and_godot_plugins(bool &r_runtime
 	}
 #else
 	String assembly_name = Path::get_csharp_project_name();
-	int del_rc = coreclr_create_delegate(
-			coreclr_handle,
-			domain_id,
+	int del_rc = coreclr_create_delegate(coreclr_handle, domain_id,
 			assembly_name.utf8().get_data(),
 			"GodotPlugins.Game.Main",
 			"InitializeFromGameProject",
@@ -518,7 +494,10 @@ void GDMono::initialize() {
 #ifdef TOOLS_ENABLED
 	gdmono::PluginCallbacks plugin_callbacks_res;
 	write_mono_log(".NET: Calling godot_plugins_initialize()...");
-	bool init_ok = godot_plugins_initialize(godot_dll_handle, Engine::get_singleton()->is_editor_hint(), &plugin_callbacks_res, &managed_callbacks, interop_funcs, interop_funcs_size);
+	bool init_ok = godot_plugins_initialize(godot_dll_handle,
+			Engine::get_singleton()->is_editor_hint(),
+			&plugin_callbacks_res, &managed_callbacks,
+			interop_funcs, interop_funcs_size);
 	if (!init_ok) {
 		write_mono_log(".NET: CRITICAL ERROR - godot_plugins_initialize() RETURNED FALSE!");
 		ERR_PRINT(".NET: GodotPlugins initialization failed. Check /storage/emulated/0/mono/mono_log.txt");
@@ -526,7 +505,8 @@ void GDMono::initialize() {
 	}
 	plugin_callbacks = plugin_callbacks_res;
 #else
-	bool init_ok = godot_plugins_initialize(godot_dll_handle, &managed_callbacks, interop_funcs, interop_funcs_size);
+	bool init_ok = godot_plugins_initialize(godot_dll_handle, &managed_callbacks,
+			interop_funcs, interop_funcs_size);
 	if (!init_ok) {
 		write_mono_log(".NET: CRITICAL ERROR - godot_plugins_initialize() RETURNED FALSE!");
 		ERR_PRINT(".NET: GodotPlugins initialization failed. Check /storage/emulated/0/mono/mono_log.txt");
@@ -574,7 +554,6 @@ uint64_t GDMono::get_api_core_hash() {
 	}
 	return api_core_hash;
 }
-
 #ifdef TOOLS_ENABLED
 uint64_t GDMono::get_api_editor_hash() {
 	if (api_editor_hash == 0) {
@@ -637,17 +616,8 @@ GDMono::~GDMono() {
 }
 
 namespace MonoBind {
-
 GodotSharp *GodotSharp::singleton = nullptr;
-
 void GodotSharp::reload_assemblies() {}
-
-GodotSharp::GodotSharp() {
-	singleton = this;
-}
-
-GodotSharp::~GodotSharp() {
-	singleton = nullptr;
-}
-
+GodotSharp::GodotSharp() { singleton = this; }
+GodotSharp::~GodotSharp() { singleton = nullptr; }
 } // namespace MonoBind
