@@ -1,4 +1,4 @@
- /**************************************************************************/
+/**************************************************************************/
 /*  gd_mono.cpp                                                           */
 /**************************************************************************/
 /*                         This file is part of:                          */
@@ -371,8 +371,15 @@ using godot_plugins_initialize_fn = bool (*)(void *, GDMonoCache::ManagedCallbac
 godot_plugins_initialize_fn initialize_hostfxr_and_godot_plugins(bool &r_runtime_initialized) {
 	godot_plugins_initialize_fn godot_plugins_initialize = nullptr;
 
-	HostFxrCharString godot_plugins_path = str_to_hostfxr(GodotSharpDirs::get_api_assemblies_dir().path_join("GodotPlugins.dll"));
-	HostFxrCharString config_path = str_to_hostfxr(GodotSharpDirs::get_api_assemblies_dir().path_join("GodotPlugins.runtimeconfig.json"));
+	String base_dir = GodotSharpDirs::get_api_assemblies_dir();
+#if defined(ANDROID_ENABLED)
+	if (FileAccess::exists("/storage/emulated/0/mono/assemblies/GodotPlugins.dll")) {
+		base_dir = "/storage/emulated/0/mono/assemblies";
+	}
+#endif
+
+	HostFxrCharString godot_plugins_path = str_to_hostfxr(base_dir.path_join("GodotPlugins.dll"));
+	HostFxrCharString config_path = str_to_hostfxr(base_dir.path_join("GodotPlugins.runtimeconfig.json"));
 
 	load_assembly_and_get_function_pointer_fn load_assembly_and_get_function_pointer =
 			initialize_hostfxr_for_config(get_data(config_path));
@@ -396,7 +403,14 @@ godot_plugins_initialize_fn initialize_hostfxr_and_godot_plugins(bool &r_runtime
 	godot_plugins_initialize_fn godot_plugins_initialize = nullptr;
 	String assembly_name = Path::get_csharp_project_name();
 
-	HostFxrCharString assembly_path = str_to_hostfxr(GodotSharpDirs::get_api_assemblies_dir().path_join(assembly_name + ".dll"));
+	String base_dir = GodotSharpDirs::get_api_assemblies_dir();
+#if defined(ANDROID_ENABLED)
+	if (FileAccess::exists("/storage/emulated/0/mono/assemblies/" + assembly_name + ".dll")) {
+		base_dir = "/storage/emulated/0/mono/assemblies";
+	}
+#endif
+
+	HostFxrCharString assembly_path = str_to_hostfxr(base_dir.path_join(assembly_name + ".dll"));
 	load_assembly_and_get_function_pointer_fn load_assembly_and_get_function_pointer =
 			initialize_hostfxr_self_contained(get_data(assembly_path));
 	ERR_FAIL_NULL_V(load_assembly_and_get_function_pointer, nullptr);
@@ -485,19 +499,17 @@ godot_plugins_initialize_fn initialize_coreclr_and_godot_plugins(bool &r_runtime
 	PackedStringArray app_paths;
 	HashSet<String> added_assemblies;
 
+	// Inuna ang /storage/emulated/0/mono/assemblies dahil naroon ang lahat ng 177 files
 	Vector<String> probe_dirs;
-	probe_dirs.push_back(GodotSharpDirs::get_api_assemblies_dir());
-	probe_dirs.push_back(GodotSharpDirs::get_api_assemblies_dir().path_join("Debug"));
-	probe_dirs.push_back(GodotSharpDirs::get_api_assemblies_dir().path_join("Release"));
-	probe_dirs.push_back("/storage/emulated/0/mono");
 	probe_dirs.push_back("/storage/emulated/0/mono/assemblies");
+	probe_dirs.push_back("/storage/emulated/0/mono");
 	probe_dirs.push_back("/storage/emulated/0/mono/GodotSharp/Api/Debug");
-	probe_dirs.push_back("/storage/emulated/0/mono/GodotSharp/Api/Release");
 	probe_dirs.push_back("/storage/emulated/0/mono/GodotSharp/Tools");
 	probe_dirs.push_back("/storage/emulated/0/mono/Tools");
-	probe_dirs.push_back(OS::get_singleton()->get_user_data_dir().path_join("mono"));
 	probe_dirs.push_back(OS::get_singleton()->get_user_data_dir().path_join("mono/assemblies"));
+	probe_dirs.push_back(OS::get_singleton()->get_user_data_dir().path_join("mono"));
 	probe_dirs.push_back(OS::get_singleton()->get_user_data_dir().path_join("mono_libs"));
+	probe_dirs.push_back(GodotSharpDirs::get_api_assemblies_dir());
 
 	for (const String &dir_path : probe_dirs) {
 		if (dir_path.is_empty() || !DirAccess::exists(dir_path)) {
@@ -600,7 +612,7 @@ godot_plugins_initialize_fn initialize_coreclr_and_godot_plugins(bool &r_runtime
 
 bool GDMono::should_initialize() {
 #if defined(ANDROID_ENABLED)
-	if (DirAccess::exists("/storage/emulated/0/mono") || DirAccess::exists(OS::get_singleton()->get_user_data_dir().path_join("mono_libs"))) {
+	if (DirAccess::exists("/storage/emulated/0/mono/assemblies") || DirAccess::exists("/storage/emulated/0/mono") || DirAccess::exists(OS::get_singleton()->get_user_data_dir().path_join("mono_libs"))) {
 		return true;
 	}
 #ifdef TOOLS_ENABLED
@@ -638,7 +650,7 @@ void GDMono::initialize() {
 	bool dir_exists = DirAccess::exists(assemblies_dir);
 
 #if defined(ANDROID_ENABLED)
-	if (!dir_exists && (DirAccess::exists("/storage/emulated/0/mono") || DirAccess::exists(OS::get_singleton()->get_user_data_dir().path_join("mono")))) {
+	if (!dir_exists && (DirAccess::exists("/storage/emulated/0/mono/assemblies") || DirAccess::exists("/storage/emulated/0/mono") || DirAccess::exists(OS::get_singleton()->get_user_data_dir().path_join("mono")))) {
 		dir_exists = true;
 	}
 #endif
@@ -690,7 +702,6 @@ void GDMono::initialize() {
 		godot_dll_handle = dlopen("libgodot_android.so", RTLD_NOW | RTLD_GLOBAL);
 	}
 	if (!godot_dll_handle) {
-		// Fallback to global process symbols handle
 		godot_dll_handle = dlopen(nullptr, RTLD_NOW | RTLD_GLOBAL);
 	}
 #if defined(RTLD_DEFAULT)
