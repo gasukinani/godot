@@ -71,6 +71,9 @@ typedef int(CORECLR_DELEGATE_CALLTYPE *coreclr_initialize_fn)(const char *exePat
 coreclr_create_delegate_fn coreclr_create_delegate = nullptr;
 coreclr_initialize_fn coreclr_initialize = nullptr;
 
+// AYOS: Idinagdag para hindi mag-undeclared identifier
+void *coreclr_dll_handle = nullptr;
+
 #ifdef ANDROID_ENABLED
 mono_install_assembly_preload_hook_fn mono_install_assembly_preload_hook = nullptr;
 mono_assembly_name_get_name_fn mono_assembly_name_get_name = nullptr;
@@ -609,15 +612,17 @@ GDMono::~GDMono() {
 	}
 	if (coreclr_dll_handle) {
 		OS::get_singleton()->close_dynamic_library(coreclr_dll_handle);
+		coreclr_dll_handle = nullptr;
 	}
 	finalizing_scripts_domain = false;
 	runtime_initialized = false;
 	singleton = nullptr;
 }
 
-namespace MonoBind {
+// AYOS: mono_bind (lowercase with underscore) ang opisyal na namespace
+namespace mono_bind {
 GodotSharp *GodotSharp::singleton = nullptr;
 void GodotSharp::reload_assemblies() {}
 GodotSharp::GodotSharp() { singleton = this; }
 GodotSharp::~GodotSharp() { singleton = nullptr; }
-} // namespace MonoBind
+} // namespace mono_bind
