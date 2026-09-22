@@ -56,7 +56,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y scons pkg-config libx11-dev libxcursor-dev \
             libxinerama-dev libgl1-mesa-dev libglu-dev libasound2-dev \
-            libpulse-dev libudev-dev libxi-dev yasm
+            libpulse-dev libudev-dev libxi-dev yasm unzip curl
           python -m pip install --upgrade pip
           pip install scons
 
@@ -87,13 +87,53 @@ jobs:
           
           echo "Building Godot Android for target: $TARGET, arch: $ARCH..."
           
-          # Inalis ang silent fallback; dapat mag-exit kapag may compilation error
           scons platform=android \
             target=$TARGET \
             arch=$ARCH \
             module_mono_enabled=yes \
             scons_cache=$SCONS_CACHE \
             -j$(nproc)
+
+      - name: Download & Inject Microsoft .NET Android Runtime (Mono)
+        run: |
+          ARCH="${{ inputs.arch_type || 'arm64' }}"
+          
+          # Tukuyin ang NuGet Runtime Identifier (RID) at Android ABI
+          if [ "$ARCH" = "arm64" ]; then
+            DOTNET_RID="android-arm64"
+            ANDROID_ABI="arm64-v8a"
+          elif [ "$ARCH" = "arm32" ]; then
+            DOTNET_RID="android-arm"
+            ANDROID_ABI="armeabi-v7a"
+          elif [ "$ARCH" = "x86_64" ]; then
+            DOTNET_RID="android-x64"
+            ANDROID_ABI="x86_64"
+          fi
+
+          echo "Downloading .NET 8 Runtime package for $DOTNET_RID..."
+          NUGET_URL="https://www.nuget.org/api/v2/package/Microsoft.NETCore.App.Runtime.Mono.${DOTNET_RID}/8.0.8"
+          curl -L -o mono_runtime.zip "$NUGET_URL"
+          unzip -q mono_runtime.zip -d mono_extracted
+
+          # 1. Ilagay ang libmonosgen-2.0.so sa Gradle jniLibs para ma-embed sa APK
+          JNILIBS_DIR="platform/android/java/app/src/main/jniLibs/${ANDROID_ABI}"
+          mkdir -p "$JNILIBS_DIR"
+          cp -v mono_extracted/runtimes/${DOTNET_RID}/native/libmonosgen-2.0.so "$JNILIBS_DIR/"
+
+          # Kopyahin din sa app/libs para sigurado sa compatibility ng Gradle
+          mkdir -p "platform/android/java/app/libs/${ANDROID_ABI}"
+          cp -v mono_extracted/runtimes/${DOTNET_RID}/native/libmonosgen-2.0.so "platform/android/java/app/libs/${ANDROID_ABI}/"
+
+          # 2. Ihanda ang Mono runtime bundle folder para sa artifact
+          mkdir -p build_output/mono_bundle/mono/assemblies/
+          cp -v mono_extracted/runtimes/${DOTNET_RID}/native/libmonosgen-2.0.so build_output/mono_bundle/mono/
+          cp -v mono_extracted/runtimes/${DOTNET_RID}/lib/net8.0/*.dll build_output/mono_bundle/mono/assemblies/
+
+          # Isama rin ang assemblies sa app assets ng APK
+          mkdir -p platform/android/java/app/src/main/assets/mono/assemblies/
+          cp -v mono_extracted/runtimes/${DOTNET_RID}/lib/net8.0/*.dll platform/android/java/app/src/main/assets/mono/assemblies/
+
+          echo ".NET Runtime successfully integrated into Gradle project!"
 
       - name: Package Android APK (Official Godot Gradle Task)
         run: |
@@ -109,23 +149,33 @@ jobs:
             ./gradlew generateGodotTemplates --stacktrace
           fi
 
-      - name: Copy & Organize APK Outputs
+      - name: Copy & Organize Outputs
         run: |
-          mkdir -p build_output/
+          mkdir -p build_output/apk/
           
-          # Hanapin at kopyahin ang nabuong APK mula sa bin o build/outputs
-          find bin/ platform/android/java -name "*.apk" -exec cp -v {} build_output/ \;
+          # Hanapin at kopyahin ang APKs
+          find bin/ platform/android/java -name "*.apk" -exec cp -v {} build_output/apk/ \;
           
-          # Kopyahin din ang mga .so library para sa verification
-          mkdir -p build_output/libs/
-          find bin/ -name "*android*.so" -exec cp -v {} build_output/libs/ \; || true
+          # I-archive ang mono folder para madaling i-download at i-extract sa phone
+          cd build_output/mono_bundle
+          zip -r ../mono_phone_storage.zip mono/
+          cd ../..
+          rm -rf build_output/mono_bundle
 
-          echo "Nilalaman ng build_output folder:"
+          echo "Nilalaman ng build_output:"
           ls -la build_output/
+          ls -la build_output/apk/
 
-      - name: Upload APK Artifact
+      - name: Upload Godot Editor APK
         uses: actions/upload-artifact@v4
         with:
           name: godot-android-mono-apk
-          path: build_output/
+          path: build_output/apk/*.apk
           if-no-files-found: error
+
+      - name: Upload Phone Mono Storage Bundle (.zip)
+        uses: actions/upload-artifact@v4
+        with:
+          name: mono-phone-storage
+          path: build_output/mono_phone_storage.zip
+          if-no-files-found: warn
