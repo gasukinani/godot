@@ -1,4 +1,4 @@
-/**************************************************************************/
+ /**************************************************************************/
 /*  gd_mono.cpp                                                           */
 /**************************************************************************/
 /*                         This file is part of:                          */
@@ -30,6 +30,7 @@
 #include "core/io/file_access.h"
 #include "core/os/os.h"
 #include "core/os/thread.h"
+#include "core/templates/hash_set.h"
 
 #ifdef UNIX_ENABLED
 #include <dlfcn.h>
@@ -482,40 +483,40 @@ godot_plugins_initialize_fn initialize_coreclr_and_godot_plugins(bool &r_runtime
 
 	PackedStringArray tpa_list;
 	PackedStringArray app_paths;
+	HashSet<String> added_assemblies;
 
-	String internal_mono_dir = OS::get_singleton()->get_user_data_dir().path_join("mono");
-	const char *search_dirs[] = {
-		"/storage/emulated/0/mono",
-		"/storage/emulated/0/mono/assemblies",
-		"/storage/emulated/0/mono/GodotSharp/Api/Debug",
-		"/storage/emulated/0/mono/Tools",
-		nullptr
-	};
+	Vector<String> probe_dirs;
+	probe_dirs.push_back(GodotSharpDirs::get_api_assemblies_dir());
+	probe_dirs.push_back(GodotSharpDirs::get_api_assemblies_dir().path_join("Debug"));
+	probe_dirs.push_back(GodotSharpDirs::get_api_assemblies_dir().path_join("Release"));
+	probe_dirs.push_back("/storage/emulated/0/mono");
+	probe_dirs.push_back("/storage/emulated/0/mono/assemblies");
+	probe_dirs.push_back("/storage/emulated/0/mono/GodotSharp/Api/Debug");
+	probe_dirs.push_back("/storage/emulated/0/mono/GodotSharp/Api/Release");
+	probe_dirs.push_back("/storage/emulated/0/mono/GodotSharp/Tools");
+	probe_dirs.push_back("/storage/emulated/0/mono/Tools");
+	probe_dirs.push_back(OS::get_singleton()->get_user_data_dir().path_join("mono"));
+	probe_dirs.push_back(OS::get_singleton()->get_user_data_dir().path_join("mono/assemblies"));
+	probe_dirs.push_back(OS::get_singleton()->get_user_data_dir().path_join("mono_libs"));
 
-	for (int i = 0; search_dirs[i] != nullptr; i++) {
-		String dir_path = search_dirs[i];
-		if (DirAccess::exists(dir_path)) {
-			app_paths.append(dir_path);
-			Ref<DirAccess> da = DirAccess::open(dir_path);
-			if (da.is_valid()) {
-				da->list_dir_begin();
-				for (String file = da->get_next(); !file.is_empty(); file = da->get_next()) {
-					if (!da->current_is_dir() && file.ends_with(".dll")) {
-						tpa_list.append(dir_path.path_join(file));
-					}
-				}
-			}
+	for (const String &dir_path : probe_dirs) {
+		if (dir_path.is_empty() || !DirAccess::exists(dir_path)) {
+			continue;
 		}
-	}
 
-	if (DirAccess::exists(internal_mono_dir)) {
-		app_paths.append(internal_mono_dir);
-		Ref<DirAccess> da = DirAccess::open(internal_mono_dir);
+		if (!app_paths.has(dir_path)) {
+			app_paths.append(dir_path);
+		}
+
+		Ref<DirAccess> da = DirAccess::open(dir_path);
 		if (da.is_valid()) {
 			da->list_dir_begin();
 			for (String file = da->get_next(); !file.is_empty(); file = da->get_next()) {
 				if (!da->current_is_dir() && file.ends_with(".dll")) {
-					tpa_list.append(internal_mono_dir.path_join(file));
+					if (!added_assemblies.has(file)) {
+						added_assemblies.insert(file);
+						tpa_list.append(dir_path.path_join(file));
+					}
 				}
 			}
 		}
@@ -528,6 +529,7 @@ godot_plugins_initialize_fn initialize_coreclr_and_godot_plugins(bool &r_runtime
 		"TRUSTED_PLATFORM_ASSEMBLIES",
 		"APP_PATHS",
 		"APP_NI_PATHS",
+		"NATIVE_DLL_SEARCH_DIRECTORIES",
 		"NativeDllSearchDirectories"
 	};
 
@@ -537,10 +539,11 @@ godot_plugins_initialize_fn initialize_coreclr_and_godot_plugins(bool &r_runtime
 		tpa_utf8.get_data(),
 		app_utf8.get_data(),
 		app_utf8.get_data(),
+		app_utf8.get_data(),
 		app_utf8.get_data()
 	};
 
-	int property_count = (tpa_list.is_empty()) ? 0 : 4;
+	int property_count = (tpa_list.is_empty()) ? 0 : 5;
 
 	print_verbose(".NET: Initializing CoreCLR with " + itos(tpa_list.size()) + " TPA assemblies.");
 
@@ -675,17 +678,40 @@ void GDMono::initialize() {
 	GDMonoCache::ManagedCallbacks managed_callbacks{};
 	void *godot_dll_handle = nullptr;
 
-	// FIX: Non-member function pointer (_on_core_api_assembly_loaded) ang ipinasa sa dladdr
 #if defined(ANDROID_ENABLED)
 	Dl_info dl_info;
 	if (dladdr((const void *)&_on_core_api_assembly_loaded, &dl_info) && dl_info.dli_fname) {
-		godot_dll_handle = dlopen(dl_info.dli_fname, RTLD_NOW);
+		godot_dll_handle = dlopen(dl_info.dli_fname, RTLD_NOW | RTLD_GLOBAL);
+		if (!godot_dll_handle) {
+			print_verbose(String(".NET: dlopen(dl_info.dli_fname) failed: ") + (dlerror() ? dlerror() : "unknown"));
+		}
 	}
 	if (!godot_dll_handle) {
-		godot_dll_handle = dlopen("libgodot_android.so", RTLD_NOW);
+		godot_dll_handle = dlopen("libgodot_android.so", RTLD_NOW | RTLD_GLOBAL);
 	}
+	if (!godot_dll_handle) {
+		// Fallback to global process symbols handle
+		godot_dll_handle = dlopen(nullptr, RTLD_NOW | RTLD_GLOBAL);
+	}
+#if defined(RTLD_DEFAULT)
+	if (!godot_dll_handle) {
+		godot_dll_handle = RTLD_DEFAULT;
+	}
+#endif
+	print_verbose(vformat(".NET: Android godot_dll_handle resolved to: %p", godot_dll_handle));
 #elif defined(UNIX_ENABLED) && !defined(MACOS_ENABLED) && !defined(APPLE_EMBEDDED_ENABLED)
 	godot_dll_handle = dlopen(nullptr, RTLD_NOW);
+#endif
+
+	if (!godot_dll_handle) {
+		ERR_PRINT(".NET: Failed to resolve Godot library handle for interop symbols.");
+	}
+
+#ifdef DEBUG_ENABLED
+	print_verbose(vformat(".NET: API Core Hash: 0x%X", (uint64_t)get_api_core_hash()));
+#ifdef TOOLS_ENABLED
+	print_verbose(vformat(".NET: API Editor Hash: 0x%X", (uint64_t)get_api_editor_hash()));
+#endif
 #endif
 
 #ifdef TOOLS_ENABLED
@@ -695,7 +721,7 @@ void GDMono::initialize() {
 			&plugin_callbacks_res, &managed_callbacks,
 			interop_funcs, interop_funcs_size);
 	if (!init_ok) {
-		ERR_PRINT(".NET: GodotPlugins initialization failed");
+		ERR_PRINT(".NET: GodotPlugins initialization failed. Ensure GodotSharp/GodotPlugins assemblies match engine API hashes.");
 		return;
 	}
 	plugin_callbacks = plugin_callbacks_res;
@@ -703,7 +729,7 @@ void GDMono::initialize() {
 	bool init_ok = godot_plugins_initialize(godot_dll_handle, &managed_callbacks,
 			interop_funcs, interop_funcs_size);
 	if (!init_ok) {
-		ERR_PRINT(".NET: GodotPlugins initialization failed");
+		ERR_PRINT(".NET: GodotPlugins initialization failed. Ensure GodotSharp/GodotPlugins assemblies match engine API hashes.");
 		return;
 	}
 #endif
