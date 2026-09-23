@@ -48,6 +48,7 @@ namespace {
 
 static void *coreclr_dll_handle = nullptr;
 static void *hostfxr_lib_handle = nullptr;
+static void *hostpolicy_lib_handle = nullptr;
 
 void write_mono_log(const String &p_msg) {
 	print_line(p_msg);
@@ -89,9 +90,9 @@ const char_t *get_data(const HostFxrCharString &p_char_str) {
 
 void HOSTFXR_CALLTYPE hostfxr_error_callback(const char_t *p_message) {
 #ifdef _WIN32
-	write_mono_log(String(".NET [HostFxr Error]: ") + String::utf16((const char16_t *)p_message));
+	write_mono_log(String(".NET [HostFxr Message]: ") + String::utf16((const char16_t *)p_message));
 #else
-	write_mono_log(String(".NET [HostFxr Error]: ") + String::utf8((const char *)p_message));
+	write_mono_log(String(".NET [HostFxr Message]: ") + String::utf8((const char *)p_message));
 #endif
 }
 
@@ -132,7 +133,6 @@ void ensure_csharp_project_files_exist() {
 }
 #endif
 
-// Function pointers
 hostfxr_initialize_for_runtime_config_fn hostfxr_initialize_for_runtime_config = nullptr;
 hostfxr_get_runtime_delegate_fn hostfxr_get_runtime_delegate = nullptr;
 hostfxr_close_fn hostfxr_close = nullptr;
@@ -199,42 +199,82 @@ String find_coreclr() {
 }
 
 bool load_hostfxr(void *&r_hostfxr_dll_handle) {
+#if defined(ANDROID_ENABLED)
+	// I-preload muna ang libhostpolicy.so dahil kailangan ito ng libhostfxr.so
+	String hostpolicy_path = prepare_android_executable_lib("libhostpolicy.so");
+	if (FileAccess::exists(hostpolicy_path)) {
+		dlerror();
+		hostpolicy_lib_handle = dlopen(hostpolicy_path.utf8().get_data(), RTLD_NOW | RTLD_GLOBAL);
+		if (hostpolicy_lib_handle) {
+			write_mono_log(".NET: Preloaded libhostpolicy.so successfully.");
+		} else {
+			const char *err = dlerror();
+			write_mono_log(String(".NET: Notice - Preloading libhostpolicy.so failed: ") + (err ? err : "Unknown error"));
+		}
+	}
+#endif
+
 	String hostfxr_path = find_hostfxr();
 	if (hostfxr_path.is_empty() || !FileAccess::exists(hostfxr_path)) {
-		write_mono_log(".NET: libhostfxr.so not found.");
+		write_mono_log(".NET: libhostfxr.so does not exist on disk.");
 		return false;
 	}
 
 	write_mono_log(".NET: Loading hostfxr library: " + hostfxr_path);
-	Error err = OS::get_singleton()->open_dynamic_library(hostfxr_path, r_hostfxr_dll_handle);
-	if (err != OK) {
-		write_mono_log(".NET: Failed to dlopen hostfxr: " + hostfxr_path);
+
+#if defined(UNIX_ENABLED)
+	dlerror();
+	r_hostfxr_dll_handle = dlopen(hostfxr_path.utf8().get_data(), RTLD_NOW | RTLD_GLOBAL);
+	if (!r_hostfxr_dll_handle) {
+		const char *err = dlerror();
+		write_mono_log(String(".NET: CRITICAL - dlopen failed on libhostfxr.so: ") + (err ? err : "Unknown error"));
 		return false;
 	}
+#else
+	Error err = OS::get_singleton()->open_dynamic_library(hostfxr_path, r_hostfxr_dll_handle);
+	if (err != OK) {
+		write_mono_log(".NET: Failed to open hostfxr: " + hostfxr_path);
+		return false;
+	}
+#endif
 
 	void *lib = r_hostfxr_dll_handle;
 	void *symbol = nullptr;
 
-	err = OS::get_singleton()->get_dynamic_library_symbol_handle(lib, "hostfxr_initialize_for_runtime_config", symbol);
-	ERR_FAIL_COND_V(err != OK, false);
+#if defined(UNIX_ENABLED)
+	symbol = dlsym(lib, "hostfxr_initialize_for_runtime_config");
 	hostfxr_initialize_for_runtime_config = (hostfxr_initialize_for_runtime_config_fn)symbol;
 
-	err = OS::get_singleton()->get_dynamic_library_symbol_handle(lib, "hostfxr_get_runtime_delegate", symbol);
-	ERR_FAIL_COND_V(err != OK, false);
+	symbol = dlsym(lib, "hostfxr_get_runtime_delegate");
 	hostfxr_get_runtime_delegate = (hostfxr_get_runtime_delegate_fn)symbol;
 
-	err = OS::get_singleton()->get_dynamic_library_symbol_handle(lib, "hostfxr_close", symbol);
-	ERR_FAIL_COND_V(err != OK, false);
+	symbol = dlsym(lib, "hostfxr_close");
 	hostfxr_close = (hostfxr_close_fn)symbol;
 
-	err = OS::get_singleton()->get_dynamic_library_symbol_handle(lib, "hostfxr_set_error_writer", symbol);
-	if (err == OK && symbol != nullptr) {
+	symbol = dlsym(lib, "hostfxr_set_error_writer");
+	if (symbol != nullptr) {
 		hostfxr_set_error_writer = (hostfxr_set_error_writer_fn)symbol;
 		hostfxr_set_error_writer(hostfxr_error_callback);
 		write_mono_log(".NET: Bound and registered hostfxr_set_error_writer callback.");
 	}
+#else
+	OS::get_singleton()->get_dynamic_library_symbol_handle(lib, "hostfxr_initialize_for_runtime_config", symbol);
+	hostfxr_initialize_for_runtime_config = (hostfxr_initialize_for_runtime_config_fn)symbol;
 
-	return (hostfxr_initialize_for_runtime_config && hostfxr_get_runtime_delegate && hostfxr_close);
+	OS::get_singleton()->get_dynamic_library_symbol_handle(lib, "hostfxr_get_runtime_delegate", symbol);
+	hostfxr_get_runtime_delegate = (hostfxr_get_runtime_delegate_fn)symbol;
+
+	OS::get_singleton()->get_dynamic_library_symbol_handle(lib, "hostfxr_close", symbol);
+	hostfxr_close = (hostfxr_close_fn)symbol;
+#endif
+
+	if (!hostfxr_initialize_for_runtime_config || !hostfxr_get_runtime_delegate || !hostfxr_close) {
+		write_mono_log(".NET: One or more hostfxr entry point symbols were not found.");
+		return false;
+	}
+
+	write_mono_log(".NET: libhostfxr.so symbols successfully resolved.");
+	return true;
 }
 
 bool load_coreclr(void *&r_coreclr_dll_handle) {
@@ -245,42 +285,59 @@ bool load_coreclr(void *&r_coreclr_dll_handle) {
 	}
 
 	write_mono_log(".NET: Loading runtime library: " + coreclr_path);
+
+#if defined(UNIX_ENABLED)
+	dlerror();
+	r_coreclr_dll_handle = dlopen(coreclr_path.utf8().get_data(), RTLD_NOW | RTLD_GLOBAL);
+	if (!r_coreclr_dll_handle) {
+		const char *err = dlerror();
+		write_mono_log(String(".NET: CRITICAL - dlopen failed on runtime: ") + (err ? err : "Unknown error"));
+		return false;
+	}
+#else
 	Error err = OS::get_singleton()->open_dynamic_library(coreclr_path, r_coreclr_dll_handle);
 	if (err != OK) {
 		write_mono_log(".NET: Failed to open dynamic library: " + coreclr_path);
 		return false;
 	}
+#endif
 
 	void *lib = r_coreclr_dll_handle;
 	void *symbol = nullptr;
 
-	err = OS::get_singleton()->get_dynamic_library_symbol_handle(lib, "coreclr_initialize", symbol);
-	ERR_FAIL_COND_V(err != OK, false);
+#if defined(UNIX_ENABLED)
+	symbol = dlsym(lib, "coreclr_initialize");
 	coreclr_initialize = (coreclr_initialize_fn)symbol;
 
-	err = OS::get_singleton()->get_dynamic_library_symbol_handle(lib, "coreclr_create_delegate", symbol);
-	ERR_FAIL_COND_V(err != OK, false);
+	symbol = dlsym(lib, "coreclr_create_delegate");
 	coreclr_create_delegate = (coreclr_create_delegate_fn)symbol;
+#else
+	OS::get_singleton()->get_dynamic_library_symbol_handle(lib, "coreclr_initialize", symbol);
+	coreclr_initialize = (coreclr_initialize_fn)symbol;
+
+	OS::get_singleton()->get_dynamic_library_symbol_handle(lib, "coreclr_create_delegate", symbol);
+	coreclr_create_delegate = (coreclr_create_delegate_fn)symbol;
+#endif
 
 #ifdef ANDROID_ENABLED
-	err = OS::get_singleton()->get_dynamic_library_symbol_handle(lib, "mono_install_assembly_preload_hook", symbol);
-	if (err == OK) {
+	symbol = dlsym(lib, "mono_install_assembly_preload_hook");
+	if (symbol) {
 		mono_install_assembly_preload_hook = (mono_install_assembly_preload_hook_fn)symbol;
 	}
-	err = OS::get_singleton()->get_dynamic_library_symbol_handle(lib, "mono_assembly_name_get_name", symbol);
-	if (err == OK) {
+	symbol = dlsym(lib, "mono_assembly_name_get_name");
+	if (symbol) {
 		mono_assembly_name_get_name = (mono_assembly_name_get_name_fn)symbol;
 	}
-	err = OS::get_singleton()->get_dynamic_library_symbol_handle(lib, "mono_assembly_name_get_culture", symbol);
-	if (err == OK) {
+	symbol = dlsym(lib, "mono_assembly_name_get_culture");
+	if (symbol) {
 		mono_assembly_name_get_culture = (mono_assembly_name_get_culture_fn)symbol;
 	}
-	err = OS::get_singleton()->get_dynamic_library_symbol_handle(lib, "mono_image_open_from_data_with_name", symbol);
-	if (err == OK) {
+	symbol = dlsym(lib, "mono_image_open_from_data_with_name");
+	if (symbol) {
 		mono_image_open_from_data_with_name = (mono_image_open_from_data_with_name_fn)symbol;
 	}
-	err = OS::get_singleton()->get_dynamic_library_symbol_handle(lib, "mono_assembly_load_from_full", symbol);
-	if (err == OK) {
+	symbol = dlsym(lib, "mono_assembly_load_from_full");
+	if (symbol) {
 		mono_assembly_load_from_full = (mono_assembly_load_from_full_fn)symbol;
 	}
 #endif
@@ -318,7 +375,7 @@ void ensure_runtimeconfig_exists(const String &p_config_path) {
 				"}\n";
 		f->store_string(json_content);
 		f->close();
-		write_mono_log(".NET: Auto-generated missing runtimeconfig at: " + p_config_path);
+		write_mono_log(".NET: Auto-generated missing runtimeconfig: " + p_config_path);
 	}
 }
 
@@ -391,7 +448,7 @@ godot_plugins_initialize_fn initialize_with_hostfxr(bool &r_runtime_initialized)
 	}
 
 	r_runtime_initialized = true;
-	write_mono_log(".NET: hostfxr initialized and bound entry point successfully! Hostpolicy is active.");
+	write_mono_log(".NET: hostfxr initialized successfully. Hostpolicy active.");
 	return godot_plugins_initialize;
 }
 
@@ -569,8 +626,7 @@ void GDMono::initialize() {
 	write_mono_log("================= GDMono::initialize() =================");
 
 #if defined(ANDROID_ENABLED)
-	// I-redirect ang stdout at stderr gamit ang POSIX dup2 sa mono_log.txt
-	// Tinitiyak nitong lahat ng unhandled C# Console.WriteLine at Crash Reports ay maisusulat sa file
+	// I-redirect ang POSIX stdout at stderr direkta sa mono_log.txt
 	int log_fd = open("/storage/emulated/0/mono/mono_log.txt", O_WRONLY | O_CREAT | O_APPEND, 0666);
 	if (log_fd >= 0) {
 		dup2(log_fd, STDOUT_FILENO);
@@ -806,11 +862,25 @@ GDMono::GDMono() {
 GDMono::~GDMono() {
 	finalizing_scripts_domain = true;
 	if (hostfxr_lib_handle) {
+#if defined(UNIX_ENABLED)
+		dlclose(hostfxr_lib_handle);
+#else
 		OS::get_singleton()->close_dynamic_library(hostfxr_lib_handle);
+#endif
 		hostfxr_lib_handle = nullptr;
 	}
+	if (hostpolicy_lib_handle) {
+#if defined(UNIX_ENABLED)
+		dlclose(hostpolicy_lib_handle);
+#endif
+		hostpolicy_lib_handle = nullptr;
+	}
 	if (coreclr_dll_handle) {
+#if defined(UNIX_ENABLED)
+		dlclose(coreclr_dll_handle);
+#else
 		OS::get_singleton()->close_dynamic_library(coreclr_dll_handle);
+#endif
 		coreclr_dll_handle = nullptr;
 	}
 	finalizing_scripts_domain = false;
@@ -829,4 +899,4 @@ void GodotSharp::reload_assemblies(bool p_soft_reload) {
 }
 GodotSharp::GodotSharp() { singleton = this; }
 GodotSharp::~GodotSharp() { singleton = nullptr; }
-} // namespace mono_bind1
+} // namespace mono_bind
