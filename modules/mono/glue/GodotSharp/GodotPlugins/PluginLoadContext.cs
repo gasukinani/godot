@@ -8,37 +8,62 @@ namespace GodotPlugins
 {
     public class PluginLoadContext : AssemblyLoadContext
     {
-        private readonly AssemblyDependencyResolver _resolver;
+        private readonly string _pluginPath;
+        private readonly AssemblyDependencyResolver? _resolver;
         private readonly ICollection<string> _sharedAssemblies;
         private readonly AssemblyLoadContext _mainLoadContext;
 
         public string? AssemblyLoadedPath { get; private set; }
 
+        private static void Log(string message)
+        {
+            try
+            {
+                Console.Error.WriteLine(message);
+                string logPath = "/storage/emulated/0/mono/mono_log.txt";
+                File.AppendAllText(logPath, $"[C# PluginLoadContext] {message}{Environment.NewLine}");
+            }
+            catch
+            {
+                // Ignore errors during file logging
+            }
+        }
+
         public PluginLoadContext(string pluginPath, ICollection<string> sharedAssemblies,
             AssemblyLoadContext mainLoadContext, bool isCollectible)
             : base(isCollectible)
         {
-            _resolver = new AssemblyDependencyResolver(pluginPath);
+            _pluginPath = pluginPath;
             _sharedAssemblies = sharedAssemblies;
             _mainLoadContext = mainLoadContext;
 
+            Log($"Initializing PluginLoadContext for: {pluginPath}");
+
+            try
+            {
+                _resolver = new AssemblyDependencyResolver(pluginPath);
+                Log("AssemblyDependencyResolver created successfully.");
+            }
+            catch (Exception ex)
+            {
+                Log($"Notice: AssemblyDependencyResolver failed (hostpolicy not loaded): {ex.Message}. Falling back to manual resolution.");
+                _resolver = null;
+            }
+
             if (string.IsNullOrEmpty(AppContext.BaseDirectory))
             {
-                // See https://github.com/dotnet/runtime/blob/v6.0.0/src/libraries/System.Private.CoreLib/src/System/AppContext.AnyOS.cs#L17-L35
-                // but Assembly.Location is unavailable, because we load assemblies from memory.
                 string? baseDirectory = Path.GetDirectoryName(pluginPath);
                 if (baseDirectory != null)
                 {
                     if (!Path.EndsInDirectorySeparator(baseDirectory))
                         baseDirectory += Path.DirectorySeparatorChar;
-                    // This SetData call effectively sets AppContext.BaseDirectory
-                    // See https://github.com/dotnet/runtime/blob/v6.0.0/src/libraries/System.Private.CoreLib/src/System/AppContext.cs#L21-L25
+
                     AppDomain.CurrentDomain.SetData("APP_CONTEXT_BASE_DIRECTORY", baseDirectory);
+                    Log($"Set AppContext.BaseDirectory to: {baseDirectory}");
                 }
                 else
                 {
-                    // TODO: How to log from GodotPlugins? (delegate pointer?)
-                    Console.Error.WriteLine("Failed to set AppContext.BaseDirectory. Dynamic loading of libraries may fail.");
+                    Log("Failed to set AppContext.BaseDirectory. Dynamic loading of libraries may fail.");
                 }
             }
         }
@@ -48,35 +73,171 @@ namespace GodotPlugins
             if (assemblyName.Name == null)
                 return null;
 
-            if (_sharedAssemblies.Contains(assemblyName.Name))
-                return _mainLoadContext.LoadFromAssemblyName(assemblyName);
+            Log($"Resolving request for assembly: {assemblyName.Name}");
 
-            string? assemblyPath = _resolver.ResolveAssemblyToPath(assemblyName);
-            if (assemblyPath != null)
+            // 1. Kung shared assembly (hal. GodotSharp, GodotSharpEditor, CoreLib), gamitin ang Default ALC
+            if (_sharedAssemblies.Contains(assemblyName.Name))
+            {
+                try
+                {
+                    var sharedAssembly = _mainLoadContext.LoadFromAssemblyName(assemblyName);
+                    Log($"Loaded shared assembly from main context: {assemblyName.Name}");
+                    return sharedAssembly;
+                }
+                catch (Exception ex)
+                {
+                    Log($"Notice: Shared assembly {assemblyName.Name} not in main context ({ex.Message}). Trying local resolution.");
+                }
+            }
+
+            // 2. DIRECT CHECK: Kung ito ang mismong project assembly na pinapapasa (hal. ForTesting)
+            string pluginFileName = Path.GetFileNameWithoutExtension(_pluginPath);
+            if (string.Equals(assemblyName.Name, pluginFileName, StringComparison.OrdinalIgnoreCase))
+            {
+                Log($"Direct hit! Loading target project assembly directly: {_pluginPath}");
+                return LoadAssemblyFromStream(_pluginPath);
+            }
+
+            // 3. Subukan ang official resolver kung available
+            string? assemblyPath = null;
+            if (_resolver != null)
+            {
+                try
+                {
+                    assemblyPath = _resolver.ResolveAssemblyToPath(assemblyName);
+                }
+                catch (Exception ex)
+                {
+                    Log($"Resolver error on {assemblyName.Name}: {ex.Message}");
+                }
+            }
+
+            // 4. FALLBACK: Hanapin sa mismong folder ng project assembly
+            if (string.IsNullOrEmpty(assemblyPath))
+            {
+                string? pluginDir = Path.GetDirectoryName(_pluginPath);
+                if (pluginDir != null)
+                {
+                    string candidate = Path.Combine(pluginDir, assemblyName.Name + ".dll");
+                    if (File.Exists(candidate))
+                    {
+                        assemblyPath = candidate;
+                    }
+                }
+            }
+
+            // 5. FALLBACK: Hanapin sa karaniwang Android Mono storage directories
+            if (string.IsNullOrEmpty(assemblyPath))
+            {
+                string[] probeDirs =
+                {
+                    "/storage/emulated/0/mono/assemblies",
+                    "/storage/emulated/0/mono"
+                };
+
+                foreach (string dir in probeDirs)
+                {
+                    if (Directory.Exists(dir))
+                    {
+                        string candidate = Path.Combine(dir, assemblyName.Name + ".dll");
+                        if (File.Exists(candidate))
+                        {
+                            assemblyPath = candidate;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // 6. Kung nahanap ang DLL sa disk, i-load sa pamamagitan ng stream (iwas file-locking)
+            if (!string.IsNullOrEmpty(assemblyPath) && File.Exists(assemblyPath))
+            {
+                Log($"Resolved '{assemblyName.Name}' to path: {assemblyPath}");
+                return LoadAssemblyFromStream(assemblyPath);
+            }
+
+            // 7. Huling subok: baka nasa MainLoadContext (TPA / CoreCLR domain)
+            try
+            {
+                var fallbackAss = _mainLoadContext.LoadFromAssemblyName(assemblyName);
+                if (fallbackAss != null)
+                {
+                    Log($"Loaded '{assemblyName.Name}' via fallback to main context.");
+                    return fallbackAss;
+                }
+            }
+            catch
+            {
+                // Hindi rin nahanap sa main context
+            }
+
+            Log($"CRITICAL: Unable to resolve assembly '{assemblyName.Name}'.");
+            return null;
+        }
+
+        private Assembly? LoadAssemblyFromStream(string assemblyPath)
+        {
+            try
             {
                 AssemblyLoadedPath = assemblyPath;
 
-                // Load in memory to prevent locking the file
                 using var assemblyFile = File.Open(assemblyPath, FileMode.Open, FileAccess.Read, FileShare.Read);
                 string pdbPath = Path.ChangeExtension(assemblyPath, ".pdb");
 
                 if (File.Exists(pdbPath))
                 {
                     using var pdbFile = File.Open(pdbPath, FileMode.Open, FileAccess.Read, FileShare.Read);
-                    return LoadFromStream(assemblyFile, pdbFile);
+                    var ass = LoadFromStream(assemblyFile, pdbFile);
+                    Log($"Loaded into memory with PDB symbols: {assemblyPath}");
+                    return ass;
                 }
 
-                return LoadFromStream(assemblyFile);
+                var loaded = LoadFromStream(assemblyFile);
+                Log($"Loaded into memory without PDB: {assemblyPath}");
+                return loaded;
             }
-
-            return null;
+            catch (Exception ex)
+            {
+                Log($"Exception while loading bytes from '{assemblyPath}': {ex}");
+                throw;
+            }
         }
 
         protected override IntPtr LoadUnmanagedDll(string unmanagedDllName)
         {
-            string? libraryPath = _resolver.ResolveUnmanagedDllToPath(unmanagedDllName);
-            if (libraryPath != null)
+            Log($"Requesting unmanaged DLL: {unmanagedDllName}");
+
+            string? libraryPath = null;
+            if (_resolver != null)
+            {
+                try
+                {
+                    libraryPath = _resolver.ResolveUnmanagedDllToPath(unmanagedDllName);
+                }
+                catch { }
+            }
+
+            if (libraryPath != null && File.Exists(libraryPath))
+            {
+                Log($"Resolved unmanaged DLL to: {libraryPath}");
                 return LoadUnmanagedDllFromPath(libraryPath);
+            }
+
+            // Local directory check para sa Android native .so
+            string? pluginDir = Path.GetDirectoryName(_pluginPath);
+            if (pluginDir != null)
+            {
+                string localLib = Path.Combine(pluginDir, unmanagedDllName);
+                if (File.Exists(localLib))
+                    return LoadUnmanagedDllFromPath(localLib);
+
+                if (!unmanagedDllName.EndsWith(".so"))
+                {
+                    localLib = Path.Combine(pluginDir, "lib" + unmanagedDllName + ".so");
+                    if (File.Exists(localLib))
+                        return LoadUnmanagedDllFromPath(localLib);
+                }
+            }
 
             return IntPtr.Zero;
         }
