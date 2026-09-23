@@ -174,10 +174,17 @@ jobs:
             ./gradlew generateGodotTemplates --stacktrace
           fi
 
-      # 7. Collect and Upload APK Output
+      # 7. Kolektahin LAHAT ng .apk na nabuo at I-upload
+      - name: Collect and Upload Output APK
+        run: |
+          mkdir -p build_output/apk/
+          find . -name "*.apk" -exec cp -v {} build_output/apk/ \;
+          echo "Nahanap na mga APK:"
+          ls -la build_output/apk/
+
       - name: Upload Godot 4.3 Editor APK
         uses: actions/upload-artifact@v4
         with:
           name: godot-4.3-android-mono-apk
-          path: godot_src/bin/*.apk
+          path: build_output/apk/*.apk
           if-no-files-found: error
