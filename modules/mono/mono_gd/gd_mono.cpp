@@ -567,12 +567,14 @@ void GDMono::initialize() {
 
 	_on_core_api_assembly_loaded();
 
+	// Mahalaga: Gawing true agad ang initialized bago subukang mag-load ng project assembly!
+	initialized = true;
+
 #ifdef TOOLS_ENABLED
 	ensure_csharp_project_files_exist();
 	_try_load_project_assembly();
 #endif
 
-	initialized = true;
 	write_mono_log(".NET: GDMono fully initialized! C# is active and ready.");
 }
 
@@ -599,7 +601,8 @@ void GDMono::_init_godot_api_hashes() {
 
 #ifdef TOOLS_ENABLED
 bool GDMono::_load_project_assembly() {
-	if (!initialized) {
+	// FIX 1: runtime_initialized ang batayan, hindi initialized flag lamang!
+	if (!runtime_initialized) {
 		return false;
 	}
 
@@ -620,11 +623,12 @@ bool GDMono::_load_project_assembly() {
 
 	Vector<String> probe_directories;
 #if defined(ANDROID_ENABLED)
-	// Unahin ang sigurado nating kinaroroonan ng DLL mula sa Termux:
+	// Diretso sa sigurado nating Termux build folders:
 	probe_directories.push_back("/storage/emulated/0/mono/assemblies");
 	probe_directories.push_back("/storage/emulated/0/Documents/" + base_name + "/.godot/mono/temp/bin/Debug");
 	probe_directories.push_back("/storage/emulated/0/Documents/" + base_name.replace(" ", "-") + "/.godot/mono/temp/bin/Debug");
 	probe_directories.push_back("/storage/emulated/0/Documents/" + base_name + "/bin/Debug/net8.0");
+	probe_directories.push_back("/storage/emulated/0/Documents/" + base_name.replace(" ", "-") + "/bin/Debug/net8.0");
 	probe_directories.push_back(OS::get_singleton()->get_user_data_dir().path_join("mono/assemblies"));
 #endif
 	probe_directories.push_back(ProjectSettings::get_singleton()->globalize_path("res://.godot/mono/temp/bin/Debug"));
@@ -648,7 +652,7 @@ bool GDMono::_load_project_assembly() {
 	}
 
 	if (found_path.is_empty()) {
-		write_mono_log(".NET: Warning - Could not find assembly for '" + base_name + "'. Probed directories checked.");
+		write_mono_log(".NET: Warning - Could not find assembly for '" + base_name + "'.");
 		return false;
 	}
 
