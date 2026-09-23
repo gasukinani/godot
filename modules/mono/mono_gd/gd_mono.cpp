@@ -583,7 +583,7 @@ void GDMono::_try_load_project_assembly() {
 	}
 	write_mono_log(".NET: Attempting to load project assembly...");
 	if (!_load_project_assembly()) {
-		write_mono_log(".NET: Notice - Project assembly not yet compiled. (Ready for Termux 'dotnet build').");
+		write_mono_log(".NET: Notice - Project assembly not yet loaded.");
 	}
 }
 #endif
@@ -604,12 +604,12 @@ bool GDMono::_load_project_assembly() {
 	}
 
 	if (!plugin_callbacks.LoadProjectAssemblyCallback) {
-		write_mono_log(".NET: LoadProjectAssemblyCallback is NULL. Skipping assembly load safely.");
+		write_mono_log(".NET: LoadProjectAssemblyCallback is NULL. Skipping safely.");
 		return false;
 	}
 
 	String base_name = get_csharp_project_name();
-	write_mono_log(".NET: Probing project assembly for: '" + base_name + "'");
+	write_mono_log(".NET: Searching assembly for project: '" + base_name + "'");
 
 	Vector<String> name_variations;
 	name_variations.push_back(base_name);
@@ -619,14 +619,15 @@ bool GDMono::_load_project_assembly() {
 	name_variations.push_back(base_name.replace("_", " "));
 
 	Vector<String> probe_directories;
-	probe_directories.push_back(ProjectSettings::get_singleton()->globalize_path("res://.godot/mono/temp/bin/Debug"));
-	probe_directories.push_back(ProjectSettings::get_singleton()->globalize_path("res://bin/Debug/net8.0"));
-	probe_directories.push_back(ProjectSettings::get_singleton()->globalize_path("res://"));
 #if defined(ANDROID_ENABLED)
+	// Unahin ang sigurado nating kinaroroonan ng DLL mula sa Termux:
 	probe_directories.push_back("/storage/emulated/0/mono/assemblies");
-	probe_directories.push_back("/storage/emulated/0/mono");
+	probe_directories.push_back("/storage/emulated/0/Documents/" + base_name + "/.godot/mono/temp/bin/Debug");
+	probe_directories.push_back("/storage/emulated/0/Documents/" + base_name.replace(" ", "-") + "/.godot/mono/temp/bin/Debug");
+	probe_directories.push_back("/storage/emulated/0/Documents/" + base_name + "/bin/Debug/net8.0");
 	probe_directories.push_back(OS::get_singleton()->get_user_data_dir().path_join("mono/assemblies"));
 #endif
+	probe_directories.push_back(ProjectSettings::get_singleton()->globalize_path("res://.godot/mono/temp/bin/Debug"));
 
 	String found_path;
 	for (int i = 0; i < probe_directories.size(); i++) {
@@ -646,38 +647,23 @@ bool GDMono::_load_project_assembly() {
 		}
 	}
 
-	// AUTOMATIC PLACEHOLDER CREATION:
-	// Kung wala pang na-compile na DLL sa bagong project, kopyahin ang placeholder para hindi mag-crash si Godot!
 	if (found_path.is_empty()) {
-		String default_assembly = ProjectSettings::get_singleton()->globalize_path("res://.godot/mono/temp/bin/Debug").path_join(base_name + ".dll");
-		String fallback_src = "/storage/emulated/0/mono/assemblies/GodotSharp.dll";
-
-		if (FileAccess::exists(fallback_src)) {
-			DirAccess::make_dir_recursive_absolute(default_assembly.get_base_dir());
-			Ref<DirAccess> da = DirAccess::open(fallback_src.get_base_dir());
-			if (da.is_valid()) {
-				da->copy(fallback_src, default_assembly);
-				write_mono_log(".NET: Auto-created placeholder assembly to prevent crash: " + default_assembly);
-				found_path = default_assembly;
-			}
-		}
-	}
-
-	if (found_path.is_empty() || !FileAccess::exists(found_path)) {
-		write_mono_log(".NET: Notice - No project DLL found. Build it via Termux.");
+		write_mono_log(".NET: Warning - Could not find assembly for '" + base_name + "'. Probed directories checked.");
 		return false;
 	}
 
-	write_mono_log(".NET: Found project assembly! Loading: " + found_path);
+	write_mono_log(".NET: SUCCESS! Found project assembly: " + found_path);
+	write_mono_log(".NET: Invoking LoadProjectAssemblyCallback...");
+	
 	String loaded_assembly_path;
 	bool success = plugin_callbacks.LoadProjectAssemblyCallback(found_path.utf16().get_data(), &loaded_assembly_path);
 
 	if (success) {
 		project_assembly_path = loaded_assembly_path.simplify_path();
 		project_assembly_modified_time = FileAccess::get_modified_time(loaded_assembly_path);
-		write_mono_log(".NET: SUCCESS! Project assembly loaded: " + project_assembly_path);
+		write_mono_log(".NET: FULL SUCCESS! Project assembly bound and active: " + project_assembly_path);
 	} else {
-		write_mono_log(".NET: Warning - Failed to load project assembly: " + found_path);
+		write_mono_log(".NET: Callback failed to bind assembly: " + found_path);
 	}
 	return success;
 }
