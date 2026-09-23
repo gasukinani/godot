@@ -137,8 +137,14 @@ const char_t *get_data(const HostFxrCharString &p_char_str) {
 }
 
 #ifdef TOOLS_ENABLED
+// PANGONTRA SA CRASH: Huwag kailanman magpapatakbo ng `dotnet` CLI process sa Android!
 bool try_get_dotnet_root_from_command_line(String &r_dotnet_root) {
+#if defined(ANDROID_ENABLED)
+	r_dotnet_root = "/storage/emulated/0/mono";
+	return true;
+#else
 	return false;
+#endif
 }
 #endif
 
@@ -312,6 +318,10 @@ godot_plugins_initialize_fn initialize_coreclr_and_godot_plugins(bool &r_runtime
 		mono_install_assembly_preload_hook(&load_assembly_from_pck, nullptr);
 		write_mono_log(".NET: Installed mono_install_assembly_preload_hook.");
 	}
+	// Itakda ang mga environment variables upang hindi maghanap ng system CLI
+	OS::get_singleton()->set_environment("DOTNET_ROOT", "/storage/emulated/0/mono");
+	OS::get_singleton()->set_environment("DOTNET_CLI_TELEMETRY_OPTOUT", "1");
+	OS::get_singleton()->set_environment("DOTNET_MULTILEVEL_LOOKUP", "0");
 #endif
 
 	void *coreclr_handle = nullptr;
@@ -542,8 +552,9 @@ void GDMono::_try_load_project_assembly() {
 	if (Engine::get_singleton()->is_project_manager_hint()) {
 		return;
 	}
+	write_mono_log(".NET: Attempting to load project assembly...");
 	if (!_load_project_assembly()) {
-		write_mono_log(".NET: Notice - Project assembly not yet loaded.");
+		write_mono_log(".NET: Notice - Project assembly not yet loaded (normal for new projects).");
 	}
 }
 #endif
@@ -560,6 +571,12 @@ void GDMono::_init_godot_api_hashes() {
 #ifdef TOOLS_ENABLED
 bool GDMono::_load_project_assembly() {
 	if (!initialized) {
+		return false;
+	}
+
+	// PANGONTRA SA CRASH: Tiyaking valid ang callback pointer
+	if (!plugin_callbacks.LoadProjectAssemblyCallback) {
+		write_mono_log(".NET: LoadProjectAssemblyCallback is NULL. Skipping assembly load safely.");
 		return false;
 	}
 
@@ -580,12 +597,16 @@ bool GDMono::_load_project_assembly() {
 		return false;
 	}
 
+	write_mono_log(".NET: Loading project assembly: " + assembly_path);
 	String loaded_assembly_path;
 	bool success = plugin_callbacks.LoadProjectAssemblyCallback(assembly_path.utf16().get_data(), &loaded_assembly_path);
 
 	if (success) {
 		project_assembly_path = loaded_assembly_path.simplify_path();
 		project_assembly_modified_time = FileAccess::get_modified_time(loaded_assembly_path);
+		write_mono_log(".NET: Project assembly loaded successfully: " + project_assembly_path);
+	} else {
+		write_mono_log(".NET: Warning - Failed to load project assembly: " + assembly_path);
 	}
 	return success;
 }
@@ -622,7 +643,7 @@ namespace mono_bind {
 GodotSharp *GodotSharp::singleton = nullptr;
 void GodotSharp::reload_assemblies(bool p_soft_reload) {
 #ifdef TOOLS_ENABLED
-	if (GDMono::get_singleton()) {
+	if (GDMono::get_singleton() && GDMono::get_singleton()->is_initialized()) {
 		GDMono::get_singleton()->reload_project_assemblies();
 	}
 #endif
