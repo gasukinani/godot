@@ -67,8 +67,37 @@ String get_csharp_project_name() {
 	if (assembly_name.is_empty()) {
 		assembly_name = GLOBAL_GET("application/config/name");
 	}
+	if (assembly_name.is_empty()) {
+		assembly_name = "Game";
+	}
 	return assembly_name;
 }
+
+#ifdef TOOLS_ENABLED
+void ensure_csharp_project_files_exist() {
+	String project_name = get_csharp_project_name();
+	String csproj_path = ProjectSettings::get_singleton()->globalize_path("res://" + project_name + ".csproj");
+
+	if (!FileAccess::exists(csproj_path)) {
+		Ref<FileAccess> f = FileAccess::open(csproj_path, FileAccess::WRITE);
+		if (f.is_valid()) {
+			String csproj_content =
+					"<Project Sdk=\"Godot.NET.Sdk/4.3.0\">\n"
+					"  <PropertyGroup>\n"
+					"    <TargetFramework>net8.0</TargetFramework>\n"
+					"    <EnableDynamicLoading>true</EnableDynamicLoading>\n"
+					"  </PropertyGroup>\n"
+					"</Project>\n";
+			f->store_string(csproj_content);
+			f->close();
+			write_mono_log(".NET: Created auto-generated project file: " + csproj_path);
+		}
+	}
+
+	String bin_dir = ProjectSettings::get_singleton()->globalize_path("res://.godot/mono/temp/bin/Debug");
+	DirAccess::make_dir_recursive_absolute(bin_dir);
+}
+#endif
 
 hostfxr_initialize_for_dotnet_command_line_fn hostfxr_initialize_for_dotnet_command_line = nullptr;
 hostfxr_initialize_for_runtime_config_fn hostfxr_initialize_for_runtime_config = nullptr;
@@ -137,7 +166,6 @@ const char_t *get_data(const HostFxrCharString &p_char_str) {
 }
 
 #ifdef TOOLS_ENABLED
-// PANGONTRA SA CRASH: Huwag kailanman magpapatakbo ng `dotnet` CLI process sa Android!
 bool try_get_dotnet_root_from_command_line(String &r_dotnet_root) {
 #if defined(ANDROID_ENABLED)
 	r_dotnet_root = "/storage/emulated/0/mono";
@@ -318,7 +346,6 @@ godot_plugins_initialize_fn initialize_coreclr_and_godot_plugins(bool &r_runtime
 		mono_install_assembly_preload_hook(&load_assembly_from_pck, nullptr);
 		write_mono_log(".NET: Installed mono_install_assembly_preload_hook.");
 	}
-	// Itakda ang mga environment variables upang hindi maghanap ng system CLI
 	OS::get_singleton()->set_environment("DOTNET_ROOT", "/storage/emulated/0/mono");
 	OS::get_singleton()->set_environment("DOTNET_CLI_TELEMETRY_OPTOUT", "1");
 	OS::get_singleton()->set_environment("DOTNET_MULTILEVEL_LOOKUP", "0");
@@ -540,6 +567,7 @@ void GDMono::initialize() {
 	_on_core_api_assembly_loaded();
 
 #ifdef TOOLS_ENABLED
+	ensure_csharp_project_files_exist();
 	_try_load_project_assembly();
 #endif
 
@@ -554,7 +582,7 @@ void GDMono::_try_load_project_assembly() {
 	}
 	write_mono_log(".NET: Attempting to load project assembly...");
 	if (!_load_project_assembly()) {
-		write_mono_log(".NET: Notice - Project assembly not yet loaded (normal for new projects).");
+		write_mono_log(".NET: Notice - Project assembly not yet compiled. (Ready for Termux 'dotnet build').");
 	}
 }
 #endif
@@ -574,7 +602,6 @@ bool GDMono::_load_project_assembly() {
 		return false;
 	}
 
-	// PANGONTRA SA CRASH: Tiyaking valid ang callback pointer
 	if (!plugin_callbacks.LoadProjectAssemblyCallback) {
 		write_mono_log(".NET: LoadProjectAssemblyCallback is NULL. Skipping assembly load safely.");
 		return false;
