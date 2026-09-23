@@ -613,19 +613,17 @@ bool GDMono::_load_project_assembly() {
 	write_mono_log(".NET: Searching assembly for project: '" + base_name + "'");
 
 	Vector<String> name_variations;
-	name_variations.push_back(base_name);
+	// Unahin ang variation na walang space para sa maaasahang assembly loading:
 	name_variations.push_back(base_name.replace(" ", "-"));
 	name_variations.push_back(base_name.replace(" ", "_"));
-	name_variations.push_back(base_name.replace("-", " "));
-	name_variations.push_back(base_name.replace("_", " "));
+	name_variations.push_back(base_name);
 
 	Vector<String> probe_directories;
 #if defined(ANDROID_ENABLED)
-	// Unahin ang local project Debug folder (kung nasaan ang for testing.deps.json)
+	// Unahin ang local Debug folder kung nasaan ang .deps.json:
 	probe_directories.push_back("/storage/emulated/0/Documents/" + base_name + "/.godot/mono/temp/bin/Debug");
 	probe_directories.push_back("/storage/emulated/0/Documents/" + base_name.replace(" ", "-") + "/.godot/mono/temp/bin/Debug");
-	probe_directories.push_back("/storage/emulated/0/Documents/" + base_name + "/bin/Debug/net8.0");
-	probe_directories.push_back("/storage/emulated/0/Documents/" + base_name.replace(" ", "-") + "/bin/Debug/net8.0");
+	probe_directories.push_back("/storage/emulated/0/Documents/" + base_name.replace(" ", "_") + "/.godot/mono/temp/bin/Debug");
 	probe_directories.push_back("/storage/emulated/0/mono/assemblies");
 	probe_directories.push_back(OS::get_singleton()->get_user_data_dir().path_join("mono/assemblies"));
 #endif
@@ -657,8 +655,28 @@ bool GDMono::_load_project_assembly() {
 	write_mono_log(".NET: SUCCESS! Found project assembly: " + found_path);
 	write_mono_log(".NET: Invoking LoadProjectAssemblyCallback...");
 	
+	// FIX: Itago ang Char16String sa persistent local variable para hindi ma-deallocate sa stack habang binabasa ng C#:
+	Char16String path_utf16 = found_path.utf16();
 	String loaded_assembly_path;
-	bool success = plugin_callbacks.LoadProjectAssemblyCallback(found_path.utf16().get_data(), &loaded_assembly_path);
+	
+	bool success = plugin_callbacks.LoadProjectAssemblyCallback(
+			(const char16_t *)path_utf16.get_data(), 
+			&loaded_assembly_path);
+
+	// Fallback retry kung sakaling may space issue ang path:
+	if (!success && found_path.contains(" ")) {
+		String alt_path = found_path.replace(" ", "-");
+		if (FileAccess::exists(alt_path)) {
+			write_mono_log(".NET: Retrying LoadProjectAssemblyCallback with: " + alt_path);
+			Char16String alt_utf16 = alt_path.utf16();
+			success = plugin_callbacks.LoadProjectAssemblyCallback(
+					(const char16_t *)alt_utf16.get_data(), 
+					&loaded_assembly_path);
+			if (success) {
+				found_path = alt_path;
+			}
+		}
+	}
 
 	if (success) {
 		project_assembly_path = loaded_assembly_path.simplify_path();
