@@ -17,42 +17,68 @@ namespace GodotPlugins
 
         private static void Log(string message)
         {
+            Console.Error.WriteLine(message);
+            string formatted = $"[C# PluginLoadContext] {message}{Environment.NewLine}";
+
             try
             {
-                Console.Error.WriteLine(message);
-                string logPath = "/storage/emulated/0/mono/mono_log.txt";
-                File.AppendAllText(logPath, $"[C# PluginLoadContext] {message}{Environment.NewLine}");
+                File.AppendAllText("/storage/emulated/0/mono/mono_log.txt", formatted);
             }
-            catch
+            catch { }
+
+            try
             {
-                // Ignore errors during file logging
+                File.AppendAllText("/data/data/org.godotengine.editor.v4.debug/files/mono_log.txt", formatted);
             }
+            catch { }
         }
 
         public PluginLoadContext(string pluginPath, ICollection<string> sharedAssemblies,
             AssemblyLoadContext mainLoadContext, bool isCollectible)
             : base(isCollectible)
         {
-            _pluginPath = pluginPath;
+            // Auto-resolve kung relative path ang ipinasa (hal. GodotSharp/Tools/GodotTools.dll)
+            string resolvedPath = pluginPath;
+            if (!Path.IsPathRooted(resolvedPath) || !File.Exists(resolvedPath))
+            {
+                string fileName = Path.GetFileName(pluginPath);
+                string[] searchDirs =
+                {
+                    "/storage/emulated/0/mono/assemblies",
+                    "/storage/emulated/0/mono"
+                };
+
+                foreach (string dir in searchDirs)
+                {
+                    string candidate = Path.Combine(dir, fileName);
+                    if (File.Exists(candidate))
+                    {
+                        resolvedPath = candidate;
+                        break;
+                    }
+                }
+            }
+
+            _pluginPath = resolvedPath;
             _sharedAssemblies = sharedAssemblies;
             _mainLoadContext = mainLoadContext;
 
-            Log($"Initializing PluginLoadContext for: {pluginPath}");
+            Log($"Initializing PluginLoadContext for: {_pluginPath}");
 
             try
             {
-                _resolver = new AssemblyDependencyResolver(pluginPath);
-                Log("AssemblyDependencyResolver created successfully.");
+                _resolver = new AssemblyDependencyResolver(_pluginPath);
+                Log("AssemblyDependencyResolver initialized successfully.");
             }
             catch (Exception ex)
             {
-                Log($"Notice: AssemblyDependencyResolver failed (hostpolicy not loaded): {ex.Message}. Falling back to manual resolution.");
+                Log($"Notice: AssemblyDependencyResolver failed (hostpolicy not active): {ex.Message}. Falling back to manual resolution.");
                 _resolver = null;
             }
 
             if (string.IsNullOrEmpty(AppContext.BaseDirectory))
             {
-                string? baseDirectory = Path.GetDirectoryName(pluginPath);
+                string? baseDirectory = Path.GetDirectoryName(_pluginPath);
                 if (baseDirectory != null)
                 {
                     if (!Path.EndsInDirectorySeparator(baseDirectory))
@@ -73,29 +99,32 @@ namespace GodotPlugins
             if (assemblyName.Name == null)
                 return null;
 
-            Log($"Resolving request for assembly: {assemblyName.Name}");
+            Log($"Resolving request for assembly: '{assemblyName.Name}'");
 
-            // 1. Kung shared assembly (hal. GodotSharp, GodotSharpEditor, CoreLib), gamitin ang Default ALC
+            // 1. Kung shared assembly (GodotSharp, GodotSharpEditor, System core), sa Main Context kunin
             if (_sharedAssemblies.Contains(assemblyName.Name))
             {
                 try
                 {
                     var sharedAssembly = _mainLoadContext.LoadFromAssemblyName(assemblyName);
-                    Log($"Loaded shared assembly from main context: {assemblyName.Name}");
+                    Log($"Loaded shared assembly from main context: '{assemblyName.Name}'");
                     return sharedAssembly;
                 }
                 catch (Exception ex)
                 {
-                    Log($"Notice: Shared assembly {assemblyName.Name} not in main context ({ex.Message}). Trying local resolution.");
+                    Log($"Notice: Shared assembly '{assemblyName.Name}' not in main context ({ex.Message}). Trying local resolution.");
                 }
             }
 
-            // 2. DIRECT CHECK: Kung ito ang mismong project assembly na pinapapasa (hal. ForTesting)
+            // 2. DIRECT CHECK: Kung ito ang mismong project assembly na pinapasa (hal. ForTesting o GodotTools)
             string pluginFileName = Path.GetFileNameWithoutExtension(_pluginPath);
             if (string.Equals(assemblyName.Name, pluginFileName, StringComparison.OrdinalIgnoreCase))
             {
-                Log($"Direct hit! Loading target project assembly directly: {_pluginPath}");
-                return LoadAssemblyFromStream(_pluginPath);
+                if (File.Exists(_pluginPath))
+                {
+                    Log($"Direct hit! Loading target project assembly directly: {_pluginPath}");
+                    return LoadAssemblyFromStream(_pluginPath);
+                }
             }
 
             // 3. Subukan ang official resolver kung available
@@ -108,7 +137,7 @@ namespace GodotPlugins
                 }
                 catch (Exception ex)
                 {
-                    Log($"Resolver error on {assemblyName.Name}: {ex.Message}");
+                    Log($"Resolver error on '{assemblyName.Name}': {ex.Message}");
                 }
             }
 
@@ -126,7 +155,7 @@ namespace GodotPlugins
                 }
             }
 
-            // 5. FALLBACK: Hanapin sa karaniwang Android Mono storage directories
+            // 5. FALLBACK: Hanapin sa default Mono assemblies directories
             if (string.IsNullOrEmpty(assemblyPath))
             {
                 string[] probeDirs =
@@ -149,14 +178,14 @@ namespace GodotPlugins
                 }
             }
 
-            // 6. Kung nahanap ang DLL sa disk, i-load sa pamamagitan ng stream (iwas file-locking)
+            // 6. Kung nahanap ang DLL sa disk, i-load gamit ang stream para maiwasan ang file-locking
             if (!string.IsNullOrEmpty(assemblyPath) && File.Exists(assemblyPath))
             {
                 Log($"Resolved '{assemblyName.Name}' to path: {assemblyPath}");
                 return LoadAssemblyFromStream(assemblyPath);
             }
 
-            // 7. Huling subok: baka nasa MainLoadContext (TPA / CoreCLR domain)
+            // 7. Huling subok: baka nasa MainLoadContext (TPA)
             try
             {
                 var fallbackAss = _mainLoadContext.LoadFromAssemblyName(assemblyName);
@@ -166,10 +195,7 @@ namespace GodotPlugins
                     return fallbackAss;
                 }
             }
-            catch
-            {
-                // Hindi rin nahanap sa main context
-            }
+            catch { }
 
             Log($"CRITICAL: Unable to resolve assembly '{assemblyName.Name}'.");
             return null;
@@ -205,7 +231,7 @@ namespace GodotPlugins
 
         protected override IntPtr LoadUnmanagedDll(string unmanagedDllName)
         {
-            Log($"Requesting unmanaged DLL: {unmanagedDllName}");
+            Log($"Requesting unmanaged DLL: '{unmanagedDllName}'");
 
             string? libraryPath = null;
             if (_resolver != null)
@@ -219,23 +245,39 @@ namespace GodotPlugins
 
             if (libraryPath != null && File.Exists(libraryPath))
             {
-                Log($"Resolved unmanaged DLL to: {libraryPath}");
+                Log($"Resolved unmanaged DLL via resolver to: {libraryPath}");
                 return LoadUnmanagedDllFromPath(libraryPath);
             }
 
-            // Local directory check para sa Android native .so
-            string? pluginDir = Path.GetDirectoryName(_pluginPath);
-            if (pluginDir != null)
+            // Priority search: unahin ang internal mono_libs kung nasaan ang mga executable .so
+            string[] searchDirs =
             {
-                string localLib = Path.Combine(pluginDir, unmanagedDllName);
-                if (File.Exists(localLib))
-                    return LoadUnmanagedDllFromPath(localLib);
+                "/data/data/org.godotengine.editor.v4.debug/files/mono_libs",
+                Path.GetDirectoryName(_pluginPath) ?? "",
+                "/storage/emulated/0/mono/assemblies",
+                "/storage/emulated/0/mono"
+            };
+
+            foreach (string dir in searchDirs)
+            {
+                if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir))
+                    continue;
+
+                string direct = Path.Combine(dir, unmanagedDllName);
+                if (File.Exists(direct))
+                {
+                    Log($"Resolved unmanaged DLL to: {direct}");
+                    return LoadUnmanagedDllFromPath(direct);
+                }
 
                 if (!unmanagedDllName.EndsWith(".so"))
                 {
-                    localLib = Path.Combine(pluginDir, "lib" + unmanagedDllName + ".so");
-                    if (File.Exists(localLib))
-                        return LoadUnmanagedDllFromPath(localLib);
+                    string candidate = Path.Combine(dir, "lib" + unmanagedDllName + ".so");
+                    if (File.Exists(candidate))
+                    {
+                        Log($"Resolved unmanaged DLL to: {candidate}");
+                        return LoadUnmanagedDllFromPath(candidate);
+                    }
                 }
             }
 
