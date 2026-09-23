@@ -34,6 +34,7 @@
 
 #ifdef UNIX_ENABLED
 #include <dlfcn.h>
+#include <fcntl.h>
 #include <unistd.h>
 #endif
 
@@ -46,6 +47,7 @@ GDMono *GDMono::singleton = nullptr;
 namespace {
 
 static void *coreclr_dll_handle = nullptr;
+static void *hostfxr_lib_handle = nullptr;
 
 void write_mono_log(const String &p_msg) {
 	print_line(p_msg);
@@ -60,6 +62,36 @@ void write_mono_log(const String &p_msg) {
 		f->store_line(p_msg);
 		f->flush();
 	}
+#endif
+}
+
+#ifdef _WIN32
+static_assert(sizeof(char_t) == sizeof(char16_t));
+using HostFxrCharString = Char16String;
+#define HOSTFXR_STR(m_str) L##m_str
+#else
+static_assert(sizeof(char_t) == sizeof(char));
+using HostFxrCharString = CharString;
+#define HOSTFXR_STR(m_str) m_str
+#endif
+
+HostFxrCharString str_to_hostfxr(const String &p_str) {
+#ifdef _WIN32
+	return p_str.utf16();
+#else
+	return p_str.utf8();
+#endif
+}
+
+const char_t *get_data(const HostFxrCharString &p_char_str) {
+	return (const char_t *)p_char_str.get_data();
+}
+
+void HOSTFXR_CALLTYPE hostfxr_error_callback(const char_t *p_message) {
+#ifdef _WIN32
+	write_mono_log(String(".NET [HostFxr Error]: ") + String::utf16((const char16_t *)p_message));
+#else
+	write_mono_log(String(".NET [HostFxr Error]: ") + String::utf8((const char *)p_message));
 #endif
 }
 
@@ -100,10 +132,11 @@ void ensure_csharp_project_files_exist() {
 }
 #endif
 
-hostfxr_initialize_for_dotnet_command_line_fn hostfxr_initialize_for_dotnet_command_line = nullptr;
+// Function pointers
 hostfxr_initialize_for_runtime_config_fn hostfxr_initialize_for_runtime_config = nullptr;
 hostfxr_get_runtime_delegate_fn hostfxr_get_runtime_delegate = nullptr;
 hostfxr_close_fn hostfxr_close = nullptr;
+hostfxr_set_error_writer_fn hostfxr_set_error_writer = nullptr;
 
 typedef int(CORECLR_DELEGATE_CALLTYPE *coreclr_create_delegate_fn)(void *hostHandle, unsigned int domainId, const char *entryPointAssemblyName, const char *entryPointTypeName, const char *entryPointMethodName, void **delegate);
 typedef int(CORECLR_DELEGATE_CALLTYPE *coreclr_initialize_fn)(const char *exePath, const char *appDomainFriendlyName, int propertyCount, const char **propertyKeys, const char **propertyValues, void **hostHandle, unsigned int *domainId);
@@ -144,39 +177,6 @@ String prepare_android_executable_lib(const String &p_filename) {
 }
 #endif
 
-#ifdef _WIN32
-static_assert(sizeof(char_t) == sizeof(char16_t));
-using HostFxrCharString = Char16String;
-#define HOSTFXR_STR(m_str) L##m_str
-#else
-static_assert(sizeof(char_t) == sizeof(char));
-using HostFxrCharString = CharString;
-#define HOSTFXR_STR(m_str) m_str
-#endif
-
-HostFxrCharString str_to_hostfxr(const String &p_str) {
-#ifdef _WIN32
-	return p_str.utf16();
-#else
-	return p_str.utf8();
-#endif
-}
-
-const char_t *get_data(const HostFxrCharString &p_char_str) {
-	return (const char_t *)p_char_str.get_data();
-}
-
-#ifdef TOOLS_ENABLED
-bool try_get_dotnet_root_from_command_line(String &r_dotnet_root) {
-#if defined(ANDROID_ENABLED)
-	r_dotnet_root = "/storage/emulated/0/mono";
-	return true;
-#else
-	return false;
-#endif
-}
-#endif
-
 String find_hostfxr() {
 #if defined(ANDROID_ENABLED)
 	return prepare_android_executable_lib("libhostfxr.so");
@@ -185,17 +185,14 @@ String find_hostfxr() {
 #endif
 }
 
-String find_monosgen() {
-#if defined(ANDROID_ENABLED)
-	return prepare_android_executable_lib("libmonosgen-2.0.so");
-#else
-	return String();
-#endif
-}
-
 String find_coreclr() {
 #if defined(ANDROID_ENABLED)
-	return prepare_android_executable_lib("libcoreclr.so");
+	prepare_android_executable_lib("libhostpolicy.so");
+	String coreclr = prepare_android_executable_lib("libcoreclr.so");
+	if (FileAccess::exists(coreclr)) {
+		return coreclr;
+	}
+	return prepare_android_executable_lib("libmonosgen-2.0.so");
 #else
 	return String();
 #endif
@@ -203,21 +200,20 @@ String find_coreclr() {
 
 bool load_hostfxr(void *&r_hostfxr_dll_handle) {
 	String hostfxr_path = find_hostfxr();
-	if (hostfxr_path.is_empty()) {
+	if (hostfxr_path.is_empty() || !FileAccess::exists(hostfxr_path)) {
+		write_mono_log(".NET: libhostfxr.so not found.");
 		return false;
 	}
 
+	write_mono_log(".NET: Loading hostfxr library: " + hostfxr_path);
 	Error err = OS::get_singleton()->open_dynamic_library(hostfxr_path, r_hostfxr_dll_handle);
 	if (err != OK) {
+		write_mono_log(".NET: Failed to dlopen hostfxr: " + hostfxr_path);
 		return false;
 	}
 
 	void *lib = r_hostfxr_dll_handle;
 	void *symbol = nullptr;
-
-	err = OS::get_singleton()->get_dynamic_library_symbol_handle(lib, "hostfxr_initialize_for_dotnet_command_line", symbol);
-	ERR_FAIL_COND_V(err != OK, false);
-	hostfxr_initialize_for_dotnet_command_line = (hostfxr_initialize_for_dotnet_command_line_fn)symbol;
 
 	err = OS::get_singleton()->get_dynamic_library_symbol_handle(lib, "hostfxr_initialize_for_runtime_config", symbol);
 	ERR_FAIL_COND_V(err != OK, false);
@@ -231,16 +227,19 @@ bool load_hostfxr(void *&r_hostfxr_dll_handle) {
 	ERR_FAIL_COND_V(err != OK, false);
 	hostfxr_close = (hostfxr_close_fn)symbol;
 
+	err = OS::get_singleton()->get_dynamic_library_symbol_handle(lib, "hostfxr_set_error_writer", symbol);
+	if (err == OK && symbol != nullptr) {
+		hostfxr_set_error_writer = (hostfxr_set_error_writer_fn)symbol;
+		hostfxr_set_error_writer(hostfxr_error_callback);
+		write_mono_log(".NET: Bound and registered hostfxr_set_error_writer callback.");
+	}
+
 	return (hostfxr_initialize_for_runtime_config && hostfxr_get_runtime_delegate && hostfxr_close);
 }
 
 bool load_coreclr(void *&r_coreclr_dll_handle) {
 	String coreclr_path = find_coreclr();
 	if (coreclr_path.is_empty() || !FileAccess::exists(coreclr_path)) {
-		coreclr_path = find_monosgen();
-	}
-
-	if (coreclr_path.is_empty()) {
 		write_mono_log(".NET: Neither libcoreclr.so nor libmonosgen-2.0.so found.");
 		return false;
 	}
@@ -296,6 +295,106 @@ using godot_plugins_initialize_fn = bool (*)(void *, bool, gdmono::PluginCallbac
 using godot_plugins_initialize_fn = bool (*)(void *, GDMonoCache::ManagedCallbacks *, const void **, int32_t);
 #endif
 
+void ensure_runtimeconfig_exists(const String &p_config_path) {
+	if (FileAccess::exists(p_config_path)) {
+		return;
+	}
+
+	Ref<FileAccess> f = FileAccess::open(p_config_path, FileAccess::WRITE);
+	if (f.is_valid()) {
+		String json_content =
+				"{\n"
+				"  \"runtimeOptions\": {\n"
+				"    \"tfm\": \"net8.0\",\n"
+				"    \"framework\": {\n"
+				"      \"name\": \"Microsoft.NETCore.App\",\n"
+				"      \"version\": \"8.0.0\"\n"
+				"    },\n"
+				"    \"configProperties\": {\n"
+				"      \"System.Reflection.NullabilityInfoContext.IsSupported\": true,\n"
+				"      \"System.Runtime.Serialization.EnableUnsafeBinaryFormatterSerialization\": false\n"
+				"    }\n"
+				"  }\n"
+				"}\n";
+		f->store_string(json_content);
+		f->close();
+		write_mono_log(".NET: Auto-generated missing runtimeconfig at: " + p_config_path);
+	}
+}
+
+godot_plugins_initialize_fn initialize_with_hostfxr(bool &r_runtime_initialized) {
+	String config_path = "/storage/emulated/0/mono/GodotPlugins.runtimeconfig.json";
+	if (!FileAccess::exists(config_path)) {
+		config_path = "/storage/emulated/0/mono/assemblies/GodotPlugins.runtimeconfig.json";
+	}
+	ensure_runtimeconfig_exists(config_path);
+
+	write_mono_log(".NET: Initializing via hostfxr with config: " + config_path);
+	HostFxrCharString config_path_host = str_to_hostfxr(config_path);
+
+	hostfxr_handle cxt = nullptr;
+	int rc = hostfxr_initialize_for_runtime_config(get_data(config_path_host), nullptr, &cxt);
+	if (rc != 0 || cxt == nullptr) {
+		write_mono_log(vformat(".NET: hostfxr_initialize_for_runtime_config failed with code: 0x%X", (unsigned int)rc));
+		if (cxt) {
+			hostfxr_close(cxt);
+		}
+		return nullptr;
+	}
+
+	void *load_assembly_and_get_function_pointer = nullptr;
+	rc = hostfxr_get_runtime_delegate(cxt, hdt_load_assembly_and_get_function_pointer, &load_assembly_and_get_function_pointer);
+	hostfxr_close(cxt);
+
+	if (rc != 0 || load_assembly_and_get_function_pointer == nullptr) {
+		write_mono_log(vformat(".NET: hostfxr_get_runtime_delegate failed with code: 0x%X", (unsigned int)rc));
+		return nullptr;
+	}
+
+	load_assembly_and_get_function_pointer_fn load_assembly_fn =
+			(load_assembly_and_get_function_pointer_fn)load_assembly_and_get_function_pointer;
+
+	String plugins_dll = "/storage/emulated/0/mono/assemblies/GodotPlugins.dll";
+	if (!FileAccess::exists(plugins_dll)) {
+		plugins_dll = "/storage/emulated/0/mono/GodotPlugins.dll";
+	}
+
+	write_mono_log(".NET: Loading GodotPlugins entry point from: " + plugins_dll);
+	HostFxrCharString plugins_dll_host = str_to_hostfxr(plugins_dll);
+
+	godot_plugins_initialize_fn godot_plugins_initialize = nullptr;
+
+#ifdef TOOLS_ENABLED
+	rc = load_assembly_fn(
+			get_data(plugins_dll_host),
+			HOSTFXR_STR("GodotPlugins.Main, GodotPlugins"),
+			HOSTFXR_STR("InitializeFromEngine"),
+			UNMANAGEDCALLERSONLY_METHOD,
+			nullptr,
+			(void **)&godot_plugins_initialize);
+#else
+	String assembly_name = get_csharp_project_name();
+	String type_str = "GodotPlugins.Game.Main, " + assembly_name;
+	HostFxrCharString type_host = str_to_hostfxr(type_str);
+	rc = load_assembly_fn(
+			get_data(plugins_dll_host),
+			get_data(type_host),
+			HOSTFXR_STR("InitializeFromGameProject"),
+			UNMANAGEDCALLERSONLY_METHOD,
+			nullptr,
+			(void **)&godot_plugins_initialize);
+#endif
+
+	if (rc != 0 || godot_plugins_initialize == nullptr) {
+		write_mono_log(vformat(".NET: load_assembly_and_get_function_pointer failed with code: 0x%X", (unsigned int)rc));
+		return nullptr;
+	}
+
+	r_runtime_initialized = true;
+	write_mono_log(".NET: hostfxr initialized and bound entry point successfully! Hostpolicy is active.");
+	return godot_plugins_initialize;
+}
+
 #ifdef ANDROID_ENABLED
 MonoAssembly *load_assembly_from_pck(MonoAssemblyName *p_assembly_name, char **p_assemblies_path, void *p_user_data) {
 	constexpr bool ref_only = false;
@@ -339,27 +438,8 @@ MonoAssembly *load_assembly_from_pck(MonoAssemblyName *p_assembly_name, char **p
 }
 #endif
 
-godot_plugins_initialize_fn initialize_coreclr_and_godot_plugins(bool &r_runtime_initialized) {
-	godot_plugins_initialize_fn godot_plugins_initialize = nullptr;
-
-#ifdef ANDROID_ENABLED
-	if (mono_install_assembly_preload_hook != nullptr) {
-		mono_install_assembly_preload_hook(&load_assembly_from_pck, nullptr);
-		write_mono_log(".NET: Installed mono_install_assembly_preload_hook.");
-	}
-	OS::get_singleton()->set_environment("DOTNET_ROOT", "/storage/emulated/0/mono");
-	OS::get_singleton()->set_environment("DOTNET_CLI_TELEMETRY_OPTOUT", "1");
-	OS::get_singleton()->set_environment("DOTNET_MULTILEVEL_LOOKUP", "0");
-	OS::get_singleton()->set_environment("DOTNET_GCHeapHardLimit", "1C0000000");
-
-	// REDIRECT STDERR & STDOUT SA MONO_LOG.TXT:
-	// Para lumabas ang buong C# .NET Exception sa loob ng mono_log.txt!
-	fflush(stdout);
-	fflush(stderr);
-	freopen("/storage/emulated/0/mono/mono_log.txt", "a", stdout);
-	freopen("/storage/emulated/0/mono/mono_log.txt", "a", stderr);
-#endif
-
+godot_plugins_initialize_fn initialize_coreclr_fallback(bool &r_runtime_initialized) {
+	write_mono_log(".NET: Falling back to direct coreclr_initialize hosting...");
 	void *coreclr_handle = nullptr;
 	unsigned int domain_id = 0;
 
@@ -370,6 +450,7 @@ godot_plugins_initialize_fn initialize_coreclr_and_godot_plugins(bool &r_runtime
 	Vector<String> probe_dirs;
 	probe_dirs.push_back("/storage/emulated/0/mono/assemblies");
 	probe_dirs.push_back("/storage/emulated/0/mono");
+	probe_dirs.push_back(OS::get_singleton()->get_user_data_dir().path_join("mono_libs"));
 	probe_dirs.push_back(OS::get_singleton()->get_user_data_dir().path_join("mono/assemblies"));
 	probe_dirs.push_back(OS::get_singleton()->get_user_data_dir().path_join("mono"));
 	probe_dirs.push_back(GodotSharpDirs::get_api_assemblies_dir());
@@ -387,7 +468,6 @@ godot_plugins_initialize_fn initialize_coreclr_and_godot_plugins(bool &r_runtime
 		if (da.is_valid()) {
 			da->list_dir_begin();
 			for (String file = da->get_next(); !file.is_empty(); file = da->get_next()) {
-				// HUWAG isama ang project assembly sa TPA! (Kailangan sa sariling collectible ALC ito mag-load!)
 				if (!da->current_is_dir() && file.ends_with(".dll") && !file.begins_with("ForTesting") && !file.begins_with("for testing")) {
 					if (!added_assemblies.has(file)) {
 						added_assemblies.insert(file);
@@ -437,7 +517,7 @@ godot_plugins_initialize_fn initialize_coreclr_and_godot_plugins(bool &r_runtime
 	}
 
 	r_runtime_initialized = true;
-	write_mono_log(".NET: CoreCLR/Mono initialized successfully.");
+	godot_plugins_initialize_fn godot_plugins_initialize = nullptr;
 
 #ifdef TOOLS_ENABLED
 	int del_rc = coreclr_create_delegate(coreclr_handle, domain_id,
@@ -445,14 +525,6 @@ godot_plugins_initialize_fn initialize_coreclr_and_godot_plugins(bool &r_runtime
 			"GodotPlugins.Main",
 			"InitializeFromEngine",
 			(void **)&godot_plugins_initialize);
-
-	if (del_rc != 0 || godot_plugins_initialize == nullptr) {
-		del_rc = coreclr_create_delegate(coreclr_handle, domain_id,
-				"GodotPlugins, Version=4.3.0.0, Culture=neutral, PublicKeyToken=null",
-				"GodotPlugins.Main",
-				"InitializeFromEngine",
-				(void **)&godot_plugins_initialize);
-	}
 #else
 	String assembly_name = get_csharp_project_name();
 	int del_rc = coreclr_create_delegate(coreclr_handle, domain_id,
@@ -467,7 +539,6 @@ godot_plugins_initialize_fn initialize_coreclr_and_godot_plugins(bool &r_runtime
 		return nullptr;
 	}
 
-	write_mono_log(".NET: Successfully acquired GodotPlugins initialize pointer.");
 	return godot_plugins_initialize;
 }
 
@@ -496,13 +567,43 @@ static bool _on_core_api_assembly_loaded() {
 
 void GDMono::initialize() {
 	write_mono_log("================= GDMono::initialize() =================");
+
+#if defined(ANDROID_ENABLED)
+	// I-redirect ang stdout at stderr gamit ang POSIX dup2 sa mono_log.txt
+	// Tinitiyak nitong lahat ng unhandled C# Console.WriteLine at Crash Reports ay maisusulat sa file
+	int log_fd = open("/storage/emulated/0/mono/mono_log.txt", O_WRONLY | O_CREAT | O_APPEND, 0666);
+	if (log_fd >= 0) {
+		dup2(log_fd, STDOUT_FILENO);
+		dup2(log_fd, STDERR_FILENO);
+		close(log_fd);
+	}
+
+	OS::get_singleton()->set_environment("DOTNET_ROOT", "/storage/emulated/0/mono");
+	OS::get_singleton()->set_environment("DOTNET_CLI_TELEMETRY_OPTOUT", "1");
+	OS::get_singleton()->set_environment("DOTNET_MULTILEVEL_LOOKUP", "0");
+	OS::get_singleton()->set_environment("DOTNET_GCHeapHardLimit", "1C0000000");
+	OS::get_singleton()->set_environment("COREHOST_TRACE", "1");
+	OS::get_singleton()->set_environment("COREHOST_TRACEFILE", "/storage/emulated/0/mono/hostfxr_trace.log");
+#endif
+
 	_init_godot_api_hashes();
 
 	godot_plugins_initialize_fn godot_plugins_initialize = nullptr;
 
 #if defined(ANDROID_ENABLED)
-	if (load_coreclr(coreclr_dll_handle)) {
-		godot_plugins_initialize = initialize_coreclr_and_godot_plugins(runtime_initialized);
+	if (load_hostfxr(hostfxr_lib_handle)) {
+		godot_plugins_initialize = initialize_with_hostfxr(runtime_initialized);
+	}
+
+	if (godot_plugins_initialize == nullptr) {
+		write_mono_log(".NET: hostfxr setup failed or not usable. Trying direct CoreCLR load...");
+		if (load_coreclr(coreclr_dll_handle)) {
+			if (mono_install_assembly_preload_hook != nullptr) {
+				mono_install_assembly_preload_hook(&load_assembly_from_pck, nullptr);
+				write_mono_log(".NET: Installed mono_install_assembly_preload_hook.");
+			}
+			godot_plugins_initialize = initialize_coreclr_fallback(runtime_initialized);
+		}
 	}
 #endif
 
@@ -630,7 +731,6 @@ bool GDMono::_load_project_assembly() {
 
 	Vector<String> probe_directories;
 #if defined(ANDROID_ENABLED)
-	// Unahin ang folder kung nasaan ang .deps.json:
 	probe_directories.push_back("/storage/emulated/0/Documents/for testing/.godot/mono/temp/bin/Debug");
 	probe_directories.push_back("/storage/emulated/0/Documents/" + base_name + "/.godot/mono/temp/bin/Debug");
 	probe_directories.push_back("/storage/emulated/0/Documents/" + base_name.replace(" ", "-") + "/.godot/mono/temp/bin/Debug");
@@ -665,7 +765,6 @@ bool GDMono::_load_project_assembly() {
 	write_mono_log(".NET: SUCCESS! Found project assembly: " + found_path);
 	write_mono_log(".NET: Invoking LoadProjectAssemblyCallback...");
 	
-	// Tiyaking ma-flush ang logs bago tawagin ang callback
 	fflush(stdout);
 	fflush(stderr);
 
@@ -676,7 +775,6 @@ bool GDMono::_load_project_assembly() {
 			(const char16_t *)path_utf16.get_data(), 
 			&loaded_assembly_path);
 
-	// I-flush ulit para masulat agad ang C# exception sa mono_log.txt kung may error
 	fflush(stdout);
 	fflush(stderr);
 
@@ -707,11 +805,13 @@ GDMono::GDMono() {
 
 GDMono::~GDMono() {
 	finalizing_scripts_domain = true;
-	if (hostfxr_dll_handle) {
-		OS::get_singleton()->close_dynamic_library(hostfxr_dll_handle);
+	if (hostfxr_lib_handle) {
+		OS::get_singleton()->close_dynamic_library(hostfxr_lib_handle);
+		hostfxr_lib_handle = nullptr;
 	}
 	if (coreclr_dll_handle) {
 		OS::get_singleton()->close_dynamic_library(coreclr_dll_handle);
+		coreclr_dll_handle = nullptr;
 	}
 	finalizing_scripts_domain = false;
 	runtime_initialized = false;
@@ -729,4 +829,4 @@ void GodotSharp::reload_assemblies(bool p_soft_reload) {
 }
 GodotSharp::GodotSharp() { singleton = this; }
 GodotSharp::~GodotSharp() { singleton = nullptr; }
-} // namespace mono_bind
+} // namespace mono_bind1
