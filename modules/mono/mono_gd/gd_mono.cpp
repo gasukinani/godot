@@ -34,6 +34,7 @@
 
 #ifdef UNIX_ENABLED
 #include <dlfcn.h>
+#include <unistd.h>
 #endif
 
 #ifdef ANDROID_ENABLED
@@ -350,6 +351,13 @@ godot_plugins_initialize_fn initialize_coreclr_and_godot_plugins(bool &r_runtime
 	OS::get_singleton()->set_environment("DOTNET_CLI_TELEMETRY_OPTOUT", "1");
 	OS::get_singleton()->set_environment("DOTNET_MULTILEVEL_LOOKUP", "0");
 	OS::get_singleton()->set_environment("DOTNET_GCHeapHardLimit", "1C0000000");
+
+	// REDIRECT STDERR & STDOUT SA MONO_LOG.TXT:
+	// Para lumabas ang buong C# .NET Exception sa loob ng mono_log.txt!
+	fflush(stdout);
+	fflush(stderr);
+	freopen("/storage/emulated/0/mono/mono_log.txt", "a", stdout);
+	freopen("/storage/emulated/0/mono/mono_log.txt", "a", stderr);
 #endif
 
 	void *coreclr_handle = nullptr;
@@ -379,7 +387,8 @@ godot_plugins_initialize_fn initialize_coreclr_and_godot_plugins(bool &r_runtime
 		if (da.is_valid()) {
 			da->list_dir_begin();
 			for (String file = da->get_next(); !file.is_empty(); file = da->get_next()) {
-				if (!da->current_is_dir() && file.ends_with(".dll")) {
+				// HUWAG isama ang project assembly sa TPA! (Kailangan sa sariling collectible ALC ito mag-load!)
+				if (!da->current_is_dir() && file.ends_with(".dll") && !file.begins_with("ForTesting") && !file.begins_with("for testing")) {
 					if (!added_assemblies.has(file)) {
 						added_assemblies.insert(file);
 						tpa_list.append(dir_path.path_join(file));
@@ -613,17 +622,18 @@ bool GDMono::_load_project_assembly() {
 	write_mono_log(".NET: Searching assembly for project: '" + base_name + "'");
 
 	Vector<String> name_variations;
-	// Unahin ang variation na walang space para sa maaasahang assembly loading:
+	name_variations.push_back(base_name);
 	name_variations.push_back(base_name.replace(" ", "-"));
 	name_variations.push_back(base_name.replace(" ", "_"));
-	name_variations.push_back(base_name);
+	name_variations.push_back(base_name.replace("-", " "));
+	name_variations.push_back(base_name.replace("_", " "));
 
 	Vector<String> probe_directories;
 #if defined(ANDROID_ENABLED)
-	// Unahin ang local Debug folder kung nasaan ang .deps.json:
+	// Unahin ang folder kung nasaan ang .deps.json:
+	probe_directories.push_back("/storage/emulated/0/Documents/for testing/.godot/mono/temp/bin/Debug");
 	probe_directories.push_back("/storage/emulated/0/Documents/" + base_name + "/.godot/mono/temp/bin/Debug");
 	probe_directories.push_back("/storage/emulated/0/Documents/" + base_name.replace(" ", "-") + "/.godot/mono/temp/bin/Debug");
-	probe_directories.push_back("/storage/emulated/0/Documents/" + base_name.replace(" ", "_") + "/.godot/mono/temp/bin/Debug");
 	probe_directories.push_back("/storage/emulated/0/mono/assemblies");
 	probe_directories.push_back(OS::get_singleton()->get_user_data_dir().path_join("mono/assemblies"));
 #endif
@@ -655,7 +665,10 @@ bool GDMono::_load_project_assembly() {
 	write_mono_log(".NET: SUCCESS! Found project assembly: " + found_path);
 	write_mono_log(".NET: Invoking LoadProjectAssemblyCallback...");
 	
-	// FIX: Itago ang Char16String sa persistent local variable para hindi ma-deallocate sa stack habang binabasa ng C#:
+	// Tiyaking ma-flush ang logs bago tawagin ang callback
+	fflush(stdout);
+	fflush(stderr);
+
 	Char16String path_utf16 = found_path.utf16();
 	String loaded_assembly_path;
 	
@@ -663,20 +676,9 @@ bool GDMono::_load_project_assembly() {
 			(const char16_t *)path_utf16.get_data(), 
 			&loaded_assembly_path);
 
-	// Fallback retry kung sakaling may space issue ang path:
-	if (!success && found_path.contains(" ")) {
-		String alt_path = found_path.replace(" ", "-");
-		if (FileAccess::exists(alt_path)) {
-			write_mono_log(".NET: Retrying LoadProjectAssemblyCallback with: " + alt_path);
-			Char16String alt_utf16 = alt_path.utf16();
-			success = plugin_callbacks.LoadProjectAssemblyCallback(
-					(const char16_t *)alt_utf16.get_data(), 
-					&loaded_assembly_path);
-			if (success) {
-				found_path = alt_path;
-			}
-		}
-	}
+	// I-flush ulit para masulat agad ang C# exception sa mono_log.txt kung may error
+	fflush(stdout);
+	fflush(stderr);
 
 	if (success) {
 		project_assembly_path = loaded_assembly_path.simplify_path();
