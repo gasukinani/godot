@@ -175,6 +175,22 @@ String prepare_android_executable_lib(const String &p_filename) {
 
 	return FileAccess::exists(internal_path) ? internal_path : p_filename;
 }
+
+void sync_all_android_native_libs() {
+	String ext_dir_path = "/storage/emulated/0/mono";
+	String internal_dir = OS::get_singleton()->get_user_data_dir().path_join("mono_libs");
+	DirAccess::make_dir_recursive_absolute(internal_dir);
+
+	Ref<DirAccess> da = DirAccess::open(ext_dir_path);
+	if (da.is_valid()) {
+		da->list_dir_begin();
+		for (String file = da->get_next(); !file.is_empty(); file = da->get_next()) {
+			if (!da->current_is_dir() && file.ends_with(".so")) {
+				prepare_android_executable_lib(file);
+			}
+		}
+	}
+}
 #endif
 
 String find_hostfxr() {
@@ -200,7 +216,6 @@ String find_coreclr() {
 
 bool load_hostfxr(void *&r_hostfxr_dll_handle) {
 #if defined(ANDROID_ENABLED)
-	// I-preload muna ang libhostpolicy.so dahil kailangan ito ng libhostfxr.so
 	String hostpolicy_path = prepare_android_executable_lib("libhostpolicy.so");
 	if (FileAccess::exists(hostpolicy_path)) {
 		dlerror();
@@ -626,7 +641,10 @@ void GDMono::initialize() {
 	write_mono_log("================= GDMono::initialize() =================");
 
 #if defined(ANDROID_ENABLED)
-	// I-redirect ang POSIX stdout at stderr direkta sa mono_log.txt
+	// 1. I-sync ang LAHAT ng native .so shims mula sa external storage papuntang internal mono_libs
+	sync_all_android_native_libs();
+
+	// 2. I-redirect ang POSIX stdout at stderr direkta sa mono_log.txt
 	int log_fd = open("/storage/emulated/0/mono/mono_log.txt", O_WRONLY | O_CREAT | O_APPEND, 0666);
 	if (log_fd >= 0) {
 		dup2(log_fd, STDOUT_FILENO);
