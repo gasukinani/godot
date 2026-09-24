@@ -818,8 +818,17 @@ void GDMono::initialize() {
 #ifdef TOOLS_ENABLED
 	gdmono::PluginCallbacks plugin_callbacks_res;
 	write_mono_log(".NET: Calling godot_plugins_initialize()...");
+
+	// Sa Android, i-disable ang desktop tools assembly hint para maiwasan ang SIGSEGV NULL pointer crash sa BuildManager
+	bool enable_editor_tools = true;
+#if defined(ANDROID_ENABLED)
+	enable_editor_tools = false;
+#else
+	enable_editor_tools = Engine::get_singleton()->is_editor_hint();
+#endif
+
 	bool init_ok = godot_plugins_initialize(godot_dll_handle,
-			Engine::get_singleton()->is_editor_hint(),
+			enable_editor_tools,
 			&plugin_callbacks_res, &managed_callbacks,
 			interop_funcs, interop_funcs_size);
 	if (!init_ok) {
