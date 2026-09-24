@@ -51,14 +51,20 @@ GDMono *GDMono::singleton = nullptr;
 
 namespace {
 
+// Keep dynamic library handles persistent throughout the Android process lifecycle
 static void *coreclr_dll_handle = nullptr;
 static void *hostfxr_lib_handle = nullptr;
 static void *hostpolicy_lib_handle = nullptr;
 static void *active_coreclr_handle = nullptr;
 static unsigned int active_domain_id = 0;
+static bool process_runtime_active = false;
 
 typedef int (*roslyn_compile_project_fn)(const char *project_dir, const char *output_dll, char *error_buf, int error_buf_size);
 static roslyn_compile_project_fn roslyn_compile_fn = nullptr;
+
+// Optional: Roslyn code completion delegate (kung may helper assembly ka para rito)
+typedef int (*roslyn_complete_code_fn)(const char *source_code, int cursor_pos, char *out_completions, int max_len);
+static roslyn_complete_code_fn roslyn_complete_fn = nullptr;
 
 void write_mono_log(const String &p_msg) {
 	print_line(p_msg);
@@ -132,6 +138,7 @@ void ensure_csharp_project_files_exist() {
 					"  <PropertyGroup>\n"
 					"    <TargetFramework>net8.0</TargetFramework>\n"
 					"    <EnableDynamicLoading>true</EnableDynamicLoading>\n"
+					"    <Nullable>enable</Nullable>\n"
 					"  </PropertyGroup>\n"
 					"</Project>\n";
 			f->store_string(csproj_content);
@@ -344,7 +351,7 @@ void setup_android_dotnet_environment() {
 	OS::get_singleton()->set_environment("DOTNET_GCHeapHardLimit", "1C0000000");
 	OS::get_singleton()->set_environment("COREHOST_TRACE", "0");
 
-	write_mono_log(".NET: Environment variables set. MSBuildSDKsPath: " + msbuild_sdks_path);
+	write_mono_log(".NET: Environment variables configured.");
 }
 #endif
 
@@ -410,7 +417,6 @@ bool execute_hybrid_csharp_build() {
 	DirAccess::make_dir_recursive_absolute(bin_dir);
 	String output_dll = bin_dir.path_join(project_name + ".dll");
 
-	// 1. PRIMARY: In-Process Roslyn Compilation (Direct in RAM)
 	if (roslyn_compile_fn != nullptr) {
 		write_mono_log(".NET: [Roslyn Engine] Compiling in RAM via Microsoft.CodeAnalysis...");
 		char err_buffer[2048] = { 0 };
@@ -430,7 +436,6 @@ bool execute_hybrid_csharp_build() {
 		write_mono_log(".NET: [Roslyn Notice] In-Process Roslyn delegate not bound. Switching to fallback.");
 	}
 
-	// 2. SECONDARY: Background CLI Build (Termux / Socket Server)
 	write_mono_log(".NET: Switching to Secondary Fallback (.NET CLI Autobuild)...");
 	return compile_csharp_project_via_termux_socket();
 }
@@ -458,16 +463,17 @@ String find_coreclr() {
 }
 
 bool load_hostfxr(void *&r_hostfxr_dll_handle) {
+	if (r_hostfxr_dll_handle != nullptr) {
+		return true; // Re-use handle kung na-load na dati
+	}
+
 #if defined(ANDROID_ENABLED)
 	String hostpolicy_path = prepare_android_executable_lib("libhostpolicy.so");
-	if (FileAccess::exists(hostpolicy_path)) {
+	if (FileAccess::exists(hostpolicy_path) && !hostpolicy_lib_handle) {
 		dlerror();
 		hostpolicy_lib_handle = dlopen(hostpolicy_path.utf8().get_data(), RTLD_NOW | RTLD_GLOBAL);
 		if (hostpolicy_lib_handle) {
 			write_mono_log(".NET: Preloaded libhostpolicy.so successfully.");
-		} else {
-			const char *err = dlerror();
-			write_mono_log(String(".NET: Notice - Preloading libhostpolicy.so failed: ") + (err ? err : "Unknown error"));
 		}
 	}
 #endif
@@ -477,8 +483,6 @@ bool load_hostfxr(void *&r_hostfxr_dll_handle) {
 		write_mono_log(".NET: libhostfxr.so does not exist on disk.");
 		return false;
 	}
-
-	write_mono_log(".NET: Loading hostfxr library: " + hostfxr_path);
 
 #if defined(UNIX_ENABLED)
 	dlerror();
@@ -491,7 +495,6 @@ bool load_hostfxr(void *&r_hostfxr_dll_handle) {
 #else
 	Error err = OS::get_singleton()->open_dynamic_library(hostfxr_path, r_hostfxr_dll_handle);
 	if (err != OK) {
-		write_mono_log(".NET: Failed to open hostfxr: " + hostfxr_path);
 		return false;
 	}
 #endif
@@ -500,107 +503,47 @@ bool load_hostfxr(void *&r_hostfxr_dll_handle) {
 	void *symbol = nullptr;
 
 #if defined(UNIX_ENABLED)
-	symbol = dlsym(lib, "hostfxr_initialize_for_runtime_config");
-	hostfxr_initialize_for_runtime_config = (hostfxr_initialize_for_runtime_config_fn)symbol;
-
-	symbol = dlsym(lib, "hostfxr_get_runtime_delegate");
-	hostfxr_get_runtime_delegate = (hostfxr_get_runtime_delegate_fn)symbol;
-
-	symbol = dlsym(lib, "hostfxr_close");
-	hostfxr_close = (hostfxr_close_fn)symbol;
-
+	hostfxr_initialize_for_runtime_config = (hostfxr_initialize_for_runtime_config_fn)dlsym(lib, "hostfxr_initialize_for_runtime_config");
+	hostfxr_get_runtime_delegate = (hostfxr_get_runtime_delegate_fn)dlsym(lib, "hostfxr_get_runtime_delegate");
+	hostfxr_close = (hostfxr_close_fn)dlsym(lib, "hostfxr_close");
 	symbol = dlsym(lib, "hostfxr_set_error_writer");
 	if (symbol != nullptr) {
 		hostfxr_set_error_writer = (hostfxr_set_error_writer_fn)symbol;
 		hostfxr_set_error_writer(hostfxr_error_callback);
-		write_mono_log(".NET: Bound and registered hostfxr_set_error_writer callback.");
 	}
-#else
-	OS::get_singleton()->get_dynamic_library_symbol_handle(lib, "hostfxr_initialize_for_runtime_config", symbol);
-	hostfxr_initialize_for_runtime_config = (hostfxr_initialize_for_runtime_config_fn)symbol;
-
-	OS::get_singleton()->get_dynamic_library_symbol_handle(lib, "hostfxr_get_runtime_delegate", symbol);
-	hostfxr_get_runtime_delegate = (hostfxr_get_runtime_delegate_fn)symbol;
-
-	OS::get_singleton()->get_dynamic_library_symbol_handle(lib, "hostfxr_close", symbol);
-	hostfxr_close = (hostfxr_close_fn)symbol;
 #endif
 
-	if (!hostfxr_initialize_for_runtime_config || !hostfxr_get_runtime_delegate || !hostfxr_close) {
-		write_mono_log(".NET: One or more hostfxr entry point symbols were not found.");
-		return false;
-	}
-
-	write_mono_log(".NET: libhostfxr.so symbols successfully resolved.");
-	return true;
+	return (hostfxr_initialize_for_runtime_config && hostfxr_get_runtime_delegate && hostfxr_close);
 }
 
 bool load_coreclr(void *&r_coreclr_dll_handle) {
-	String coreclr_path = find_coreclr();
-	if (coreclr_path.is_empty() || !FileAccess::exists(coreclr_path)) {
-		write_mono_log(".NET: Neither libcoreclr.so nor libmonosgen-2.0.so found.");
-		return false;
+	if (r_coreclr_dll_handle != nullptr) {
+		return true; // Re-use handle
 	}
 
-	write_mono_log(".NET: Loading runtime library: " + coreclr_path);
+	String coreclr_path = find_coreclr();
+	if (coreclr_path.is_empty() || !FileAccess::exists(coreclr_path)) {
+		return false;
+	}
 
 #if defined(UNIX_ENABLED)
 	dlerror();
 	r_coreclr_dll_handle = dlopen(coreclr_path.utf8().get_data(), RTLD_NOW | RTLD_GLOBAL);
 	if (!r_coreclr_dll_handle) {
-		const char *err = dlerror();
-		write_mono_log(String(".NET: CRITICAL - dlopen failed on runtime: ") + (err ? err : "Unknown error"));
 		return false;
 	}
-#else
-	Error err = OS::get_singleton()->open_dynamic_library(coreclr_path, r_coreclr_dll_handle);
-	if (err != OK) {
-		write_mono_log(".NET: Failed to open dynamic library: " + coreclr_path);
-		return false;
-	}
-#endif
 
-	void *lib = r_coreclr_dll_handle;
-	void *symbol = nullptr;
-
-#if defined(UNIX_ENABLED)
-	symbol = dlsym(lib, "coreclr_initialize");
-	coreclr_initialize = (coreclr_initialize_fn)symbol;
-
-	symbol = dlsym(lib, "coreclr_create_delegate");
-	coreclr_create_delegate = (coreclr_create_delegate_fn)symbol;
-#else
-	OS::get_singleton()->get_dynamic_library_symbol_handle(lib, "coreclr_initialize", symbol);
-	coreclr_initialize = (coreclr_initialize_fn)symbol;
-
-	OS::get_singleton()->get_dynamic_library_symbol_handle(lib, "coreclr_create_delegate", symbol);
-	coreclr_create_delegate = (coreclr_create_delegate_fn)symbol;
-#endif
+	coreclr_initialize = (coreclr_initialize_fn)dlsym(r_coreclr_dll_handle, "coreclr_initialize");
+	coreclr_create_delegate = (coreclr_create_delegate_fn)dlsym(r_coreclr_dll_handle, "coreclr_create_delegate");
 
 #ifdef ANDROID_ENABLED
-	symbol = dlsym(lib, "mono_install_assembly_preload_hook");
-	if (symbol) {
-		mono_install_assembly_preload_hook = (mono_install_assembly_preload_hook_fn)symbol;
-	}
-	symbol = dlsym(lib, "mono_assembly_name_get_name");
-	if (symbol) {
-		mono_assembly_name_get_name = (mono_assembly_name_get_name_fn)symbol;
-	}
-	symbol = dlsym(lib, "mono_assembly_name_get_culture");
-	if (symbol) {
-		mono_assembly_name_get_culture = (mono_assembly_name_get_culture_fn)symbol;
-	}
-	symbol = dlsym(lib, "mono_image_open_from_data_with_name");
-	if (symbol) {
-		mono_image_open_from_data_with_name = (mono_image_open_from_data_with_name_fn)symbol;
-	}
-	symbol = dlsym(lib, "mono_assembly_load_from_full");
-	if (symbol) {
-		mono_assembly_load_from_full = (mono_assembly_load_from_full_fn)symbol;
-	}
+	mono_install_assembly_preload_hook = (mono_install_assembly_preload_hook_fn)dlsym(r_coreclr_dll_handle, "mono_install_assembly_preload_hook");
+	mono_assembly_name_get_name = (mono_assembly_name_get_name_fn)dlsym(r_coreclr_dll_handle, "mono_assembly_name_get_name");
+	mono_assembly_name_get_culture = (mono_assembly_name_get_culture_fn)dlsym(r_coreclr_dll_handle, "mono_assembly_name_get_culture");
+	mono_image_open_from_data_with_name = (mono_image_open_from_data_with_name_fn)dlsym(r_coreclr_dll_handle, "mono_image_open_from_data_with_name");
+	mono_assembly_load_from_full = (mono_assembly_load_from_full_fn)dlsym(r_coreclr_dll_handle, "mono_assembly_load_from_full");
 #endif
-
-	write_mono_log(".NET: CoreCLR/Mono symbols bound successfully.");
+#endif
 	return (coreclr_initialize && coreclr_create_delegate);
 }
 
@@ -609,6 +552,8 @@ using godot_plugins_initialize_fn = bool (*)(void *, bool, gdmono::PluginCallbac
 #else
 using godot_plugins_initialize_fn = bool (*)(void *, GDMonoCache::ManagedCallbacks *, const void **, int32_t);
 #endif
+
+static godot_plugins_initialize_fn cached_plugins_init = nullptr;
 
 void ensure_runtimeconfig_exists(const String &p_config_path) {
 	if (FileAccess::exists(p_config_path)) {
@@ -633,24 +578,27 @@ void ensure_runtimeconfig_exists(const String &p_config_path) {
 				"}\n";
 		f->store_string(json_content);
 		f->close();
-		write_mono_log(".NET: Auto-generated missing runtimeconfig: " + p_config_path);
 	}
 }
 
 godot_plugins_initialize_fn initialize_with_hostfxr(bool &r_runtime_initialized) {
+	if (cached_plugins_init != nullptr && process_runtime_active) {
+		write_mono_log(".NET: Reusing active .NET Runtime in current process!");
+		r_runtime_initialized = true;
+		return cached_plugins_init;
+	}
+
 	String config_path = "/storage/emulated/0/mono/GodotPlugins.runtimeconfig.json";
 	if (!FileAccess::exists(config_path)) {
 		config_path = "/storage/emulated/0/mono/assemblies/GodotPlugins.runtimeconfig.json";
 	}
 	ensure_runtimeconfig_exists(config_path);
 
-	write_mono_log(".NET: Initializing via hostfxr with config: " + config_path);
 	HostFxrCharString config_path_host = str_to_hostfxr(config_path);
-
 	hostfxr_handle cxt = nullptr;
 	int rc = hostfxr_initialize_for_runtime_config(get_data(config_path_host), nullptr, &cxt);
 	if (rc != 0 || cxt == nullptr) {
-		write_mono_log(vformat(".NET: hostfxr_initialize_for_runtime_config failed with code: 0x%X", (unsigned int)rc));
+		write_mono_log(vformat(".NET: hostfxr_initialize_for_runtime_config failed: 0x%X", (unsigned int)rc));
 		if (cxt) {
 			hostfxr_close(cxt);
 		}
@@ -662,7 +610,6 @@ godot_plugins_initialize_fn initialize_with_hostfxr(bool &r_runtime_initialized)
 	hostfxr_close(cxt);
 
 	if (rc != 0 || load_assembly_and_get_function_pointer == nullptr) {
-		write_mono_log(vformat(".NET: hostfxr_get_runtime_delegate failed with code: 0x%X", (unsigned int)rc));
 		return nullptr;
 	}
 
@@ -678,9 +625,15 @@ godot_plugins_initialize_fn initialize_with_hostfxr(bool &r_runtime_initialized)
 				UNMANAGEDCALLERSONLY_METHOD,
 				nullptr,
 				(void **)&roslyn_compile_fn);
-		if (roslyn_compile_fn) {
-			write_mono_log(".NET: Bound in-process Roslyn compiler via hostfxr!");
-		}
+
+		// Subukan ding i-bind ang Roslyn Code Completion Helper kung available sa DLL
+		load_assembly_fn(
+				get_data(str_to_hostfxr(compiler_dll)),
+				HOSTFXR_STR("GodotAndroidCompiler.InProcessCompiler, GodotAndroidCompiler"),
+				HOSTFXR_STR("GetCompletions"),
+				UNMANAGEDCALLERSONLY_METHOD,
+				nullptr,
+				(void **)&roslyn_complete_fn);
 	}
 
 	String plugins_dll = "/storage/emulated/0/mono/assemblies/GodotPlugins.dll";
@@ -688,9 +641,7 @@ godot_plugins_initialize_fn initialize_with_hostfxr(bool &r_runtime_initialized)
 		plugins_dll = "/storage/emulated/0/mono/GodotPlugins.dll";
 	}
 
-	write_mono_log(".NET: Loading GodotPlugins entry point from: " + plugins_dll);
 	HostFxrCharString plugins_dll_host = str_to_hostfxr(plugins_dll);
-
 	godot_plugins_initialize_fn godot_plugins_initialize = nullptr;
 
 #ifdef TOOLS_ENABLED
@@ -715,12 +666,12 @@ godot_plugins_initialize_fn initialize_with_hostfxr(bool &r_runtime_initialized)
 #endif
 
 	if (rc != 0 || godot_plugins_initialize == nullptr) {
-		write_mono_log(vformat(".NET: load_assembly_and_get_function_pointer failed with code: 0x%X", (unsigned int)rc));
 		return nullptr;
 	}
 
+	cached_plugins_init = godot_plugins_initialize;
+	process_runtime_active = true;
 	r_runtime_initialized = true;
-	write_mono_log(".NET: hostfxr initialized successfully. Hostpolicy active.");
 	return godot_plugins_initialize;
 }
 
@@ -757,7 +708,7 @@ MonoAssembly *load_assembly_from_pck(MonoAssemblyName *p_assembly_name, char **p
 	MonoImageOpenStatus status = MONO_IMAGE_OK;
 	MonoImage *image = mono_image_open_from_data_with_name(
 			reinterpret_cast<char *>(data.ptrw()), data.size(),
-			/*need_copy*/ true, &status, ref_only, assembly_name.utf8().get_data());
+			true, &status, ref_only, assembly_name.utf8().get_data());
 	if (status != MONO_IMAGE_OK || image == nullptr) {
 		return nullptr;
 	}
@@ -768,7 +719,11 @@ MonoAssembly *load_assembly_from_pck(MonoAssemblyName *p_assembly_name, char **p
 #endif
 
 godot_plugins_initialize_fn initialize_coreclr_fallback(bool &r_runtime_initialized) {
-	write_mono_log(".NET: Falling back to direct coreclr_initialize hosting...");
+	if (cached_plugins_init != nullptr && process_runtime_active) {
+		r_runtime_initialized = true;
+		return cached_plugins_init;
+	}
+
 	active_coreclr_handle = nullptr;
 	active_domain_id = 0;
 
@@ -807,8 +762,6 @@ godot_plugins_initialize_fn initialize_coreclr_fallback(bool &r_runtime_initiali
 		}
 	}
 
-	write_mono_log(".NET: Scanned " + itos(tpa_list.size()) + " TPA assemblies.");
-
 	String tpa_paths_str = String(":").join(tpa_list);
 	String app_paths_str = String(":").join(app_paths);
 
@@ -841,22 +794,22 @@ godot_plugins_initialize_fn initialize_coreclr_fallback(bool &r_runtime_initiali
 			&active_domain_id);
 
 	if (rc != 0) {
-		write_mono_log(vformat(".NET: coreclr_initialize failed with error: 0x%X", (unsigned int)rc));
 		return nullptr;
 	}
 
-	r_runtime_initialized = true;
-
 	String compiler_dll = "/storage/emulated/0/mono/assemblies/GodotAndroidCompiler.dll";
 	if (FileAccess::exists(compiler_dll)) {
-		int comp_rc = coreclr_create_delegate(active_coreclr_handle, active_domain_id,
+		coreclr_create_delegate(active_coreclr_handle, active_domain_id,
 				"GodotAndroidCompiler",
 				"GodotAndroidCompiler.InProcessCompiler",
 				"CompileProject",
 				(void **)&roslyn_compile_fn);
-		if (comp_rc == 0 && roslyn_compile_fn != nullptr) {
-			write_mono_log(".NET: Bound in-process Roslyn compiler via direct CoreCLR!");
-		}
+
+		coreclr_create_delegate(active_coreclr_handle, active_domain_id,
+				"GodotAndroidCompiler",
+				"GodotAndroidCompiler.InProcessCompiler",
+				"GetCompletions",
+				(void **)&roslyn_complete_fn);
 	}
 
 	godot_plugins_initialize_fn godot_plugins_initialize = nullptr;
@@ -877,10 +830,12 @@ godot_plugins_initialize_fn initialize_coreclr_fallback(bool &r_runtime_initiali
 #endif
 
 	if (del_rc != 0 || godot_plugins_initialize == nullptr) {
-		write_mono_log(vformat(".NET: Failed to bind GodotPlugins entry point delegate (code 0x%X).", (unsigned int)del_rc));
 		return nullptr;
 	}
 
+	cached_plugins_init = godot_plugins_initialize;
+	process_runtime_active = true;
+	r_runtime_initialized = true;
 	return godot_plugins_initialize;
 }
 
@@ -913,13 +868,6 @@ void GDMono::initialize() {
 #if defined(ANDROID_ENABLED)
 	sync_all_android_native_libs();
 	setup_android_dotnet_environment();
-
-	int log_fd = open("/storage/emulated/0/mono/mono_log.txt", O_WRONLY | O_CREAT | O_APPEND, 0666);
-	if (log_fd >= 0) {
-		dup2(log_fd, STDOUT_FILENO);
-		dup2(log_fd, STDERR_FILENO);
-		close(log_fd);
-	}
 #endif
 
 	_init_godot_api_hashes();
@@ -932,11 +880,9 @@ void GDMono::initialize() {
 	}
 
 	if (godot_plugins_initialize == nullptr) {
-		write_mono_log(".NET: hostfxr setup failed or not usable. Trying direct CoreCLR load...");
 		if (load_coreclr(coreclr_dll_handle)) {
-			if (mono_install_assembly_preload_hook != nullptr) {
+			if (mono_install_assembly_preload_hook != nullptr && !process_runtime_active) {
 				mono_install_assembly_preload_hook(&load_assembly_from_pck, nullptr);
-				write_mono_log(".NET: Installed mono_install_assembly_preload_hook.");
 			}
 			godot_plugins_initialize = initialize_coreclr_fallback(runtime_initialized);
 		}
@@ -950,7 +896,6 @@ void GDMono::initialize() {
 
 	int32_t interop_funcs_size = 0;
 	const void **interop_funcs = godotsharp::get_runtime_interop_funcs(interop_funcs_size);
-	write_mono_log(".NET: Interop functions count: " + itos(interop_funcs_size));
 
 	GDMonoCache::ManagedCallbacks managed_callbacks{};
 	void *godot_dll_handle = nullptr;
@@ -959,7 +904,6 @@ void GDMono::initialize() {
 	Dl_info dl_info;
 	if (dladdr((const void *)&_on_core_api_assembly_loaded, &dl_info) && dl_info.dli_fname) {
 		godot_dll_handle = dlopen(dl_info.dli_fname, RTLD_NOW | RTLD_GLOBAL);
-		write_mono_log(String(".NET: dlopen(dl_info.dli_fname) = ") + (godot_dll_handle ? "SUCCESS" : "FAIL"));
 	}
 	if (!godot_dll_handle) {
 		godot_dll_handle = dlopen("libgodot_android.so", RTLD_NOW | RTLD_GLOBAL);
@@ -967,56 +911,35 @@ void GDMono::initialize() {
 	if (!godot_dll_handle) {
 		godot_dll_handle = dlopen(nullptr, RTLD_NOW | RTLD_GLOBAL);
 	}
-#if defined(RTLD_DEFAULT)
-	if (!godot_dll_handle) {
-		godot_dll_handle = RTLD_DEFAULT;
-	}
-#endif
 #elif defined(UNIX_ENABLED)
 	godot_dll_handle = dlopen(nullptr, RTLD_NOW);
 #endif
 
-	write_mono_log(vformat(".NET: godot_dll_handle resolved to: 0x%X", (uint64_t)godot_dll_handle));
-
-#ifdef DEBUG_ENABLED
-	write_mono_log(vformat(".NET: C++ API Core Hash: 0x%X", (uint64_t)get_api_core_hash()));
-#ifdef TOOLS_ENABLED
-	write_mono_log(vformat(".NET: C++ API Editor Hash: 0x%X", (uint64_t)get_api_editor_hash()));
-#endif
-#endif
-
 #ifdef TOOLS_ENABLED
 	gdmono::PluginCallbacks plugin_callbacks_res;
-	write_mono_log(".NET: Calling godot_plugins_initialize()...");
-
 	bool init_ok = godot_plugins_initialize(godot_dll_handle,
 			Engine::get_singleton()->is_editor_hint(),
 			&plugin_callbacks_res, &managed_callbacks,
 			interop_funcs, interop_funcs_size);
 	if (!init_ok) {
-		write_mono_log(".NET: CRITICAL ERROR - godot_plugins_initialize() RETURNED FALSE!");
-		ERR_PRINT(".NET: GodotPlugins initialization failed. Check /storage/emulated/0/mono/mono_log.txt");
+		write_mono_log(".NET: CRITICAL ERROR - godot_plugins_initialize() returned false!");
 		return;
 	}
 
 	plugin_callbacks = plugin_callbacks_res;
-
 #else
 	bool init_ok = godot_plugins_initialize(godot_dll_handle, &managed_callbacks,
 			interop_funcs, interop_funcs_size);
 	if (!init_ok) {
-		write_mono_log(".NET: CRITICAL ERROR - godot_plugins_initialize() RETURNED FALSE!");
-		ERR_PRINT(".NET: GodotPlugins initialization failed. Check /storage/emulated/0/mono/mono_log.txt");
 		return;
 	}
 #endif
 
-	write_mono_log(".NET: SUCCESS! Updating api cache...");
 	GDMonoCache::update_godot_api_cache(managed_callbacks);
-
 	_on_core_api_assembly_loaded();
 
 	initialized = true;
+	runtime_initialized = true;
 
 #ifdef TOOLS_ENABLED
 	String current_proj_name = get_csharp_project_name();
@@ -1026,7 +949,7 @@ void GDMono::initialize() {
 	_try_load_project_assembly();
 #endif
 
-	write_mono_log(".NET: GDMono fully initialized! C# is active and ready.");
+	write_mono_log(".NET: GDMono successfully initialized!");
 }
 
 #ifdef TOOLS_ENABLED
@@ -1036,13 +959,12 @@ void GDMono::_try_load_project_assembly() {
 	}
 	write_mono_log(".NET: Attempting to load project assembly...");
 
-	// 1. Suriin kung out-of-date o may binagong .cs files
 	String project_dir = ProjectSettings::get_singleton()->globalize_path("res://");
 	uint64_t latest_cs_time = get_latest_cs_modified_time(project_dir);
 
 	bool need_build = false;
 	if (project_assembly_modified_time == 0 || latest_cs_time > project_assembly_modified_time) {
-		write_mono_log(".NET: Detected modified or missing .cs files! Auto-compiling before launch...");
+		write_mono_log(".NET: Detected modified or missing .cs files! Auto-compiling...");
 		need_build = true;
 	}
 
@@ -1054,7 +976,6 @@ void GDMono::_try_load_project_assembly() {
 
 	if (!_load_project_assembly()) {
 #if defined(ANDROID_ENABLED)
-		write_mono_log(".NET: Project assembly missing. Retrying Hybrid Compiler...");
 		if (execute_hybrid_csharp_build()) {
 			if (_load_project_assembly()) {
 				return;
@@ -1062,7 +983,6 @@ void GDMono::_try_load_project_assembly() {
 		}
 #endif
 		write_mono_log(".NET: Notice - Project assembly not yet loaded.");
-		return;
 	}
 }
 #endif
@@ -1083,28 +1003,20 @@ bool GDMono::_load_project_assembly() {
 	}
 
 	if (!plugin_callbacks.LoadProjectAssemblyCallback) {
-		write_mono_log(".NET: LoadProjectAssemblyCallback is NULL. Skipping safely.");
 		return false;
 	}
 
 	String base_name = get_csharp_project_name();
-	write_mono_log(".NET: Searching assembly for project: '" + base_name + "'");
-
 	Vector<String> name_variations;
 	name_variations.push_back(base_name);
 	name_variations.push_back(base_name.replace(" ", "-"));
 	name_variations.push_back(base_name.replace(" ", "_"));
-	name_variations.push_back(base_name.replace("-", " "));
-	name_variations.push_back(base_name.replace("_", " "));
 
 	Vector<String> probe_directories;
 #if defined(ANDROID_ENABLED)
 	probe_directories.push_back(ProjectSettings::get_singleton()->globalize_path("res://.godot/mono/temp/bin/Debug"));
 	probe_directories.push_back("/storage/emulated/0/Documents/" + base_name + "/.godot/mono/temp/bin/Debug");
-	probe_directories.push_back("/storage/emulated/0/Documents/" + base_name.replace(" ", "-") + "/.godot/mono/temp/bin/Debug");
-	probe_directories.push_back("/storage/emulated/0/Documents/for testing/.godot/mono/temp/bin/Debug");
 	probe_directories.push_back("/storage/emulated/0/mono/assemblies");
-	probe_directories.push_back(OS::get_singleton()->get_user_data_dir().path_join("mono/assemblies"));
 #else
 	probe_directories.push_back(ProjectSettings::get_singleton()->globalize_path("res://.godot/mono/temp/bin/Debug"));
 #endif
@@ -1128,15 +1040,8 @@ bool GDMono::_load_project_assembly() {
 	}
 
 	if (found_path.is_empty()) {
-		write_mono_log(".NET: Warning - Could not find assembly for '" + base_name + "'.");
 		return false;
 	}
-
-	write_mono_log(".NET: SUCCESS! Found project assembly: " + found_path);
-	write_mono_log(".NET: Invoking LoadProjectAssemblyCallback...");
-
-	fflush(stdout);
-	fflush(stderr);
 
 	Char16String path_utf16 = found_path.utf16();
 	String loaded_assembly_path;
@@ -1145,15 +1050,10 @@ bool GDMono::_load_project_assembly() {
 			(const char16_t *)path_utf16.get_data(),
 			&loaded_assembly_path);
 
-	fflush(stdout);
-	fflush(stderr);
-
 	if (success) {
 		project_assembly_path = loaded_assembly_path.simplify_path();
 		project_assembly_modified_time = FileAccess::get_modified_time(loaded_assembly_path);
-		write_mono_log(".NET: FULL SUCCESS! Project assembly bound and active: " + project_assembly_path);
-	} else {
-		write_mono_log(".NET: Callback failed to bind assembly: " + found_path);
+		write_mono_log(".NET: Project assembly active: " + project_assembly_path);
 	}
 	return success;
 }
@@ -1163,7 +1063,6 @@ Error GDMono::reload_project_assemblies() {
 		return ERR_BUG;
 	}
 #if defined(ANDROID_ENABLED) && defined(TOOLS_ENABLED)
-	write_mono_log(".NET: [Pre-Run/Reload Hook] Checking if build is needed before running...");
 	execute_hybrid_csharp_build();
 #endif
 	if (!_load_project_assembly()) {
@@ -1179,32 +1078,14 @@ GDMono::GDMono() {
 
 GDMono::~GDMono() {
 	finalizing_scripts_domain = true;
-	if (hostfxr_lib_handle) {
-#if defined(UNIX_ENABLED)
-		dlclose(hostfxr_lib_handle);
-#else
-		OS::get_singleton()->close_dynamic_library(hostfxr_lib_handle);
-#endif
-		hostfxr_lib_handle = nullptr;
-	}
-	if (hostpolicy_lib_handle) {
-#if defined(UNIX_ENABLED)
-		dlclose(hostpolicy_lib_handle);
-#else
-		OS::get_singleton()->close_dynamic_library(hostpolicy_lib_handle);
-#endif
-		hostpolicy_lib_handle = nullptr;
-	}
-	if (coreclr_dll_handle) {
-#if defined(UNIX_ENABLED)
-		dlclose(coreclr_dll_handle);
-#else
-		OS::get_singleton()->close_dynamic_library(coreclr_dll_handle);
-#endif
-		coreclr_dll_handle = nullptr;
-	}
+
+	// HUWAG TATAWAGIN ANG dlclose() SA hostfxr O coreclr DITO!
+	// Sa Android, ang app process ay nananatiling bukas pagbalik sa Project Manager.
+	// Ang pag-dlclose ng .NET Core ay agad nagdudulot ng SIGSEGV crash sa mga background GC threads.
+	// Sa halip, pinapanatili nating active ang runtime handle para sa susunod na project reload.
+
 	finalizing_scripts_domain = false;
-	runtime_initialized = false;
+	initialized = false;
 	singleton = nullptr;
 }
 
