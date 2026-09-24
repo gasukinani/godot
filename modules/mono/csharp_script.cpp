@@ -921,10 +921,6 @@ bool CSharpLanguage::debug_break(const String &p_error, bool p_allow_continue) {
 
 #ifdef TOOLS_ENABLED
 void CSharpLanguage::_editor_init_callback() {
-#if defined(ANDROID_ENABLED)
-	print_verbose(".NET: Skipping GodotTools plugin on Android to prevent MSBuild crash.");
-	return;
-#else
 	if (!GDMono::get_singleton() || !GDMono::get_singleton()->is_runtime_initialized() || GDMono::get_singleton()->get_plugin_callbacks().LoadToolsAssemblyCallback == nullptr) {
 		print_verbose(".NET: Runtime not initialized or LoadToolsAssemblyCallback missing, skipping GodotTools plugin loading.");
 		return;
@@ -932,7 +928,17 @@ void CSharpLanguage::_editor_init_callback() {
 
 	int32_t interop_funcs_size = 0;
 	const void **interop_funcs = godotsharp::get_editor_interop_funcs(interop_funcs_size);
+	
+	// Hanapin ang GodotTools.dll sa project o sa shared mono directory
 	String tools_path = GodotSharpDirs::get_data_editor_tools_dir().path_join("GodotTools.dll");
+#if defined(ANDROID_ENABLED)
+	if (!FileAccess::exists(tools_path)) {
+		tools_path = "/storage/emulated/0/mono/assemblies/GodotTools.dll";
+	}
+	if (!FileAccess::exists(tools_path)) {
+		tools_path = ProjectSettings::get_singleton()->globalize_path("res://GodotSharp/Tools/GodotTools.dll");
+	}
+#endif
 
 	print_verbose(".NET: Loading GodotTools assembly from: " + tools_path);
 
@@ -955,7 +961,6 @@ void CSharpLanguage::_editor_init_callback() {
 	godotsharp_editor->enable_plugin();
 
 	get_singleton()->godotsharp_editor = godotsharp_editor;
-#endif
 }
 #endif
 
