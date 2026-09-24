@@ -36,6 +36,7 @@
 #include <dlfcn.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <sys/stat.h>
 #endif
 
 #ifdef ANDROID_ENABLED
@@ -189,6 +190,87 @@ void sync_all_android_native_libs() {
 				prepare_android_executable_lib(file);
 			}
 		}
+	}
+}
+#endif
+
+#if defined(ANDROID_ENABLED) && defined(TOOLS_ENABLED)
+void ensure_android_build_environment() {
+	String mono_dir = "/storage/emulated/0/mono";
+	DirAccess::make_dir_recursive_absolute(mono_dir);
+
+	// 1. I-apply ang 755 permissions sa Termux directories para ma-access ng Godot
+	chmod("/data/data/com.termux", 0755);
+	chmod("/data/data/com.termux/files", 0755);
+	chmod("/data/data/com.termux/files/usr", 0755);
+	chmod("/data/data/com.termux/files/usr/bin", 0755);
+	chmod("/data/data/com.termux/files/usr/bin/proot", 0755);
+
+	// 2. Tiyaking may compile.sh sa storage; kung wala, kusa itong gagawin ng Godot
+	String compile_script_path = mono_dir.path_join("compile.sh");
+	if (!FileAccess::exists(compile_script_path)) {
+		Ref<FileAccess> f = FileAccess::open(compile_script_path, FileAccess::WRITE);
+		if (f.is_valid()) {
+			String script_content =
+					"#!/system/bin/sh\n"
+					"PROJECT_DIR=\"$1\"\n\n"
+					"export PREFIX=\"/data/data/com.termux/files/usr\"\n"
+					"export HOME=\"/data/data/com.termux/files/home\"\n"
+					"export PATH=\"$PREFIX/bin:$PATH\"\n"
+					"export TMPDIR=\"$PREFIX/tmp\"\n"
+					"unset LD_PRELOAD\n\n"
+					"$PREFIX/bin/proot-distro login ubuntu --bind /storage:/storage -- bash -c \"cd \\\"$PROJECT_DIR\\\" && dotnet build\"\n";
+			f->store_string(script_content);
+			f->close();
+			write_mono_log(".NET: Auto-generated missing compile script: " + compile_script_path);
+		}
+	}
+
+	// 3. Siguraduhing executable ang compile.sh
+	chmod(compile_script_path.utf8().get_data(), 0755);
+}
+
+bool compile_csharp_project_on_android() {
+	ensure_android_build_environment();
+
+	String project_dir = ProjectSettings::get_singleton()->globalize_path("res://");
+	write_mono_log(".NET: [AutoBuild] Compiling C# project in background: " + project_dir);
+
+	String script_path = "/storage/emulated/0/mono/compile.sh";
+	if (!FileAccess::exists(script_path)) {
+		write_mono_log(".NET: [AutoBuild] ERROR - compile.sh not found!");
+		return false;
+	}
+
+	List<String> args;
+	args.push_back(script_path);
+	args.push_back(project_dir);
+
+	String output;
+	int exit_code = -1;
+
+	// Patakbuhin gamit ang /system/bin/sh sa background nang hindi binubuksan ang Termux
+	Error err = OS::get_singleton()->execute("/system/bin/sh", args, &output, &exit_code, true);
+
+	// Fallback kung permission-restricted at may 'su' (rooted device)
+	if (err != OK || exit_code != 0) {
+		if (FileAccess::exists("/system/bin/su") || FileAccess::exists("/system/xbin/su")) {
+			write_mono_log(".NET: [AutoBuild] Normal execution restricted, attempting with su...");
+			List<String> su_args;
+			su_args.push_back("-c");
+			su_args.push_back("sh " + script_path + " \"" + project_dir + "\"");
+			err = OS::get_singleton()->execute("su", su_args, &output, &exit_code, true);
+		}
+	}
+
+	write_mono_log(".NET: [AutoBuild Output]:\n" + output);
+
+	if (exit_code == 0) {
+		write_mono_log(".NET: [AutoBuild] Build SUCCESSFUL!");
+		return true;
+	} else {
+		write_mono_log(vformat(".NET: [AutoBuild] Build FAILED with exit code: %d", exit_code));
+		return false;
 	}
 }
 #endif
@@ -755,6 +837,9 @@ void GDMono::initialize() {
 
 #ifdef TOOLS_ENABLED
 	ensure_csharp_project_files_exist();
+#if defined(ANDROID_ENABLED)
+	ensure_android_build_environment();
+#endif
 	_try_load_project_assembly();
 #endif
 
@@ -768,6 +853,13 @@ void GDMono::_try_load_project_assembly() {
 	}
 	write_mono_log(".NET: Attempting to load project assembly...");
 	if (!_load_project_assembly()) {
+#if defined(ANDROID_ENABLED)
+		write_mono_log(".NET: Project assembly missing. Running automatic background build...");
+		if (compile_csharp_project_on_android()) {
+			_load_project_assembly();
+			return;
+		}
+#endif
 		write_mono_log(".NET: Notice - Project assembly not yet loaded.");
 	}
 }
@@ -866,6 +958,10 @@ Error GDMono::reload_project_assemblies() {
 	if (!runtime_initialized) {
 		return ERR_BUG;
 	}
+#if defined(ANDROID_ENABLED) && defined(TOOLS_ENABLED)
+	write_mono_log(".NET: Recompiling project before reloading assemblies...");
+	compile_csharp_project_on_android();
+#endif
 	if (!_load_project_assembly()) {
 		return ERR_CANT_OPEN;
 	}
@@ -890,6 +986,8 @@ GDMono::~GDMono() {
 	if (hostpolicy_lib_handle) {
 #if defined(UNIX_ENABLED)
 		dlclose(hostpolicy_lib_handle);
+#else
+		OS::get_singleton()->close_dynamic_library(hostpolicy_lib_handle);
 #endif
 		hostpolicy_lib_handle = nullptr;
 	}
