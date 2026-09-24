@@ -54,6 +54,12 @@ namespace {
 static void *coreclr_dll_handle = nullptr;
 static void *hostfxr_lib_handle = nullptr;
 static void *hostpolicy_lib_handle = nullptr;
+static void *active_coreclr_handle = nullptr;
+static unsigned int active_domain_id = 0;
+
+// In-Process Roslyn Compiler function delegate signature
+typedef int (*roslyn_compile_project_fn)(const char *project_dir, const char *output_dll, char *error_buf, int error_buf_size);
+static roslyn_compile_project_fn roslyn_compile_fn = nullptr;
 
 void write_mono_log(const String &p_msg) {
 	print_line(p_msg);
@@ -318,16 +324,16 @@ void setup_android_dotnet_environment() {
 #endif
 
 #if defined(ANDROID_ENABLED) && defined(TOOLS_ENABLED)
-bool compile_csharp_project_on_android() {
+bool compile_csharp_project_via_termux_socket() {
 	String project_name = get_csharp_project_name();
 	String project_dir = ProjectSettings::get_singleton()->globalize_path("res://");
 	String csproj_file = project_dir.path_join(project_name + ".csproj");
 
-	write_mono_log(".NET: [AutoBuild] Contacting background compiler for: " + project_dir);
+	write_mono_log(".NET: [Fallback] Contacting background compiler (Termux)...");
 
 	int sock = socket(AF_INET, SOCK_STREAM, 0);
 	if (sock < 0) {
-		write_mono_log(".NET: [AutoBuild] Socket creation failed.");
+		write_mono_log(".NET: [Fallback] Socket creation failed.");
 		return false;
 	}
 
@@ -343,7 +349,7 @@ bool compile_csharp_project_on_android() {
 	setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tv, sizeof(tv));
 
 	if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
-		write_mono_log(".NET: [AutoBuild] Cannot connect to compiler (127.0.0.1:8088). Tumatakbo ba ang autobuild.py sa Termux?");
+		write_mono_log(".NET: [Fallback] Compiler port 8088 not reachable.");
 		close(sock);
 		return false;
 	}
@@ -361,15 +367,47 @@ bool compile_csharp_project_on_android() {
 	}
 	close(sock);
 
-	write_mono_log(".NET: [AutoBuild Response]:\n" + response);
-
 	if (response.contains("200 OK") || response.contains("BUILD_SUCCESS")) {
-		write_mono_log(".NET: [AutoBuild] Background build SUCCEEDED!");
+		write_mono_log(".NET: [Fallback] Termux background build SUCCEEDED!");
 		return true;
 	}
 
-	write_mono_log(".NET: [AutoBuild] Background build FAILED.");
+	write_mono_log(".NET: [Fallback] Termux build failed.");
 	return false;
+}
+
+bool execute_hybrid_csharp_build() {
+	write_mono_log(">>>>> [BUILD TRIGGERED] Starting Hybrid C# Build Engine <<<<<");
+
+	String project_dir = ProjectSettings::get_singleton()->globalize_path("res://");
+	String project_name = get_csharp_project_name();
+	String bin_dir = project_dir.path_join(".godot/mono/temp/bin/Debug");
+	DirAccess::make_dir_recursive_absolute(bin_dir);
+	String output_dll = bin_dir.path_join(project_name + ".dll");
+
+	// 1. PRIMARY: In-Process Roslyn Compilation (Direct in RAM)
+	if (roslyn_compile_fn != nullptr) {
+		write_mono_log(".NET: [Roslyn Engine] Compiling in RAM via Microsoft.CodeAnalysis...");
+		char err_buffer[2048] = { 0 };
+		int res = roslyn_compile_fn(
+				project_dir.utf8().get_data(),
+				output_dll.utf8().get_data(),
+				err_buffer,
+				sizeof(err_buffer));
+
+		if (res == 0) {
+			write_mono_log(".NET: [Roslyn Engine] RAM BUILD SUCCEEDED! -> " + output_dll);
+			return true;
+		} else {
+			write_mono_log(String(".NET: [Roslyn Notice] In-process compiler returned ") + itos(res) + ":\n" + String::utf8(err_buffer));
+		}
+	} else {
+		write_mono_log(".NET: [Roslyn Notice] In-Process Roslyn delegate not bound. Switching to fallback.");
+	}
+
+	// 2. SECONDARY: Background CLI Build (Termux / Socket Server)
+	write_mono_log(".NET: Switching to Secondary Fallback (.NET CLI Autobuild)...");
+	return compile_csharp_project_via_termux_socket();
 }
 #endif
 
@@ -606,6 +644,21 @@ godot_plugins_initialize_fn initialize_with_hostfxr(bool &r_runtime_initialized)
 	load_assembly_and_get_function_pointer_fn load_assembly_fn =
 			(load_assembly_and_get_function_pointer_fn)load_assembly_and_get_function_pointer;
 
+	// I-bind ang In-Process Roslyn Compiler Delegate kung mayroon
+	String compiler_dll = "/storage/emulated/0/mono/assemblies/GodotAndroidCompiler.dll";
+	if (FileAccess::exists(compiler_dll)) {
+		load_assembly_fn(
+				get_data(str_to_hostfxr(compiler_dll)),
+				HOSTFXR_STR("GodotAndroidCompiler.InProcessCompiler, GodotAndroidCompiler"),
+				HOSTFXR_STR("CompileProject"),
+				UNMANAGEDCALLERSONLY_METHOD,
+				nullptr,
+				(void **)&roslyn_compile_fn);
+		if (roslyn_compile_fn) {
+			write_mono_log(".NET: Bound in-process Roslyn compiler via hostfxr!");
+		}
+	}
+
 	String plugins_dll = "/storage/emulated/0/mono/assemblies/GodotPlugins.dll";
 	if (!FileAccess::exists(plugins_dll)) {
 		plugins_dll = "/storage/emulated/0/mono/GodotPlugins.dll";
@@ -692,8 +745,8 @@ MonoAssembly *load_assembly_from_pck(MonoAssemblyName *p_assembly_name, char **p
 
 godot_plugins_initialize_fn initialize_coreclr_fallback(bool &r_runtime_initialized) {
 	write_mono_log(".NET: Falling back to direct coreclr_initialize hosting...");
-	void *coreclr_handle = nullptr;
-	unsigned int domain_id = 0;
+	active_coreclr_handle = nullptr;
+	active_domain_id = 0;
 
 	PackedStringArray tpa_list;
 	PackedStringArray app_paths;
@@ -760,8 +813,8 @@ godot_plugins_initialize_fn initialize_coreclr_fallback(bool &r_runtime_initiali
 			5,
 			property_keys,
 			property_values,
-			&coreclr_handle,
-			&domain_id);
+			&active_coreclr_handle,
+			&active_domain_id);
 
 	if (rc != 0) {
 		write_mono_log(vformat(".NET: coreclr_initialize failed with error: 0x%X", (unsigned int)rc));
@@ -769,17 +822,31 @@ godot_plugins_initialize_fn initialize_coreclr_fallback(bool &r_runtime_initiali
 	}
 
 	r_runtime_initialized = true;
+
+	// Subukang i-bind ang In-Process Roslyn Compiler via CoreCLR delegate
+	String compiler_dll = "/storage/emulated/0/mono/assemblies/GodotAndroidCompiler.dll";
+	if (FileAccess::exists(compiler_dll)) {
+		int comp_rc = coreclr_create_delegate(active_coreclr_handle, active_domain_id,
+				"GodotAndroidCompiler",
+				"GodotAndroidCompiler.InProcessCompiler",
+				"CompileProject",
+				(void **)&roslyn_compile_fn);
+		if (comp_rc == 0 && roslyn_compile_fn != nullptr) {
+			write_mono_log(".NET: Bound in-process Roslyn compiler via direct CoreCLR!");
+		}
+	}
+
 	godot_plugins_initialize_fn godot_plugins_initialize = nullptr;
 
 #ifdef TOOLS_ENABLED
-	int del_rc = coreclr_create_delegate(coreclr_handle, domain_id,
+	int del_rc = coreclr_create_delegate(active_coreclr_handle, active_domain_id,
 			"GodotPlugins",
 			"GodotPlugins.Main",
 			"InitializeFromEngine",
 			(void **)&godot_plugins_initialize);
 #else
 	String assembly_name = get_csharp_project_name();
-	int del_rc = coreclr_create_delegate(coreclr_handle, domain_id,
+	int del_rc = coreclr_create_delegate(active_coreclr_handle, active_domain_id,
 			assembly_name.utf8().get_data(),
 			"GodotPlugins.Game.Main",
 			"InitializeFromGameProject",
@@ -793,6 +860,18 @@ godot_plugins_initialize_fn initialize_coreclr_fallback(bool &r_runtime_initiali
 
 	return godot_plugins_initialize;
 }
+
+#ifdef TOOLS_ENABLED
+// Custom Build Hook Callback para pigilan ang pag-crash ng Hammer / Build button
+bool intercepted_editor_build_callback() {
+	write_mono_log(".NET: [Hammer Clicked] Intercepted editor build request!");
+	bool success = execute_hybrid_csharp_build();
+	if (success) {
+		GDMono::get_singleton()->reload_project_assemblies();
+	}
+	return success;
+}
+#endif
 
 } // namespace
 
@@ -908,7 +987,14 @@ void GDMono::initialize() {
 		ERR_PRINT(".NET: GodotPlugins initialization failed. Check /storage/emulated/0/mono/mono_log.txt");
 		return;
 	}
+
 	plugin_callbacks = plugin_callbacks_res;
+
+	// SALUHIN ANG BUILD CALLBACK: Ipalit ang ating ligtas na hybrid compiler para hindi mag-crash ang martilyo
+	if (plugin_callbacks.BuildProjectCallback != nullptr) {
+		plugin_callbacks.BuildProjectCallback = &intercepted_editor_build_callback;
+		write_mono_log(".NET: Hammer/Build callback securely intercepted with Hybrid Engine!");
+	}
 
 #else
 	bool init_ok = godot_plugins_initialize(godot_dll_handle, &managed_callbacks,
@@ -946,8 +1032,8 @@ void GDMono::_try_load_project_assembly() {
 	write_mono_log(".NET: Attempting to load project assembly...");
 	if (!_load_project_assembly()) {
 #if defined(ANDROID_ENABLED)
-		write_mono_log(".NET: Project assembly missing. Triggering background build...");
-		if (compile_csharp_project_on_android()) {
+		write_mono_log(".NET: Project assembly missing. Triggering Hybrid Compiler...");
+		if (execute_hybrid_csharp_build()) {
 			if (_load_project_assembly()) {
 				return;
 			}
@@ -1056,7 +1142,7 @@ Error GDMono::reload_project_assemblies() {
 	}
 #if defined(ANDROID_ENABLED) && defined(TOOLS_ENABLED)
 	write_mono_log(".NET: Recompiling project before reloading assemblies...");
-	compile_csharp_project_on_android();
+	execute_hybrid_csharp_build();
 #endif
 	if (!_load_project_assembly()) {
 		return ERR_CANT_OPEN;
