@@ -22,6 +22,7 @@
 #ifdef TOOLS_ENABLED
 #include "../editor/hostfxr_resolver.h"
 #include "../editor/semver.h"
+#include "editor/plugins/editor_plugin.h"
 #endif
 
 #include "core/config/engine.h"
@@ -71,11 +72,12 @@ void write_mono_log(const String &p_msg) {
 }
 
 #if defined(ANDROID_ENABLED) && defined(TOOLS_ENABLED)
-// Magbalik ng valid na Object instance sa halip na nullptr para maiwasan ang
-// Null Pointer Dereference crash sa C++ caller ng Godot Editor.
+// Magbalik ng totoong EditorPlugin instance sa halip na generic Object o nullptr
+// upang kapag ini-cast ito ng C++ Engine (Object::cast_to<EditorPlugin>),
+// maging VALID ito at hindi mag-crash sa Pure Virtual Call o Null Pointer Dereference.
 static Object *dummy_load_tools_assembly(const char16_t *p_path, const void **p_unmanaged_callbacks, int p_unmanaged_callbacks_size) {
-	write_mono_log(".NET: [Notice] LoadToolsAssembly bypassed safely on Android. Returning safe dummy object.");
-	return memnew(Object);
+	write_mono_log(".NET: [Notice] LoadToolsAssembly bypassed safely on Android. Returning dummy EditorPlugin.");
+	return memnew(EditorPlugin);
 }
 #endif
 
@@ -840,8 +842,8 @@ void GDMono::initialize() {
 	plugin_callbacks = plugin_callbacks_res;
 
 #if defined(ANDROID_ENABLED)
-	// I-route sa dummy callback na nagbabalik ng valid na Object pointer (memnew(Object))
-	// upang hindi mag-crash ang C++ caller dahil sa null pointer dereference.
+	// I-route sa dummy callback na nagbabalik ng valid na EditorPlugin pointer
+	// upang hindi mag-crash ang C++ caller (EditorNode) kapag ini-cast at tinawag ito.
 	plugin_callbacks.LoadToolsAssemblyCallback = &dummy_load_tools_assembly;
 	write_mono_log(".NET: Safe dummy LoadToolsAssemblyCallback assigned for Android.");
 #endif
@@ -864,7 +866,6 @@ void GDMono::initialize() {
 	initialized = true;
 
 #ifdef TOOLS_ENABLED
-	// Siguraduhing naka-set ang C# assembly name bago mag-load ng assemblies
 	String current_proj_name = get_csharp_project_name();
 	ProjectSettings::get_singleton()->set_setting("dotnet/project/assembly_name", current_proj_name);
 
