@@ -138,18 +138,26 @@ void ensure_csharp_project_files_exist() {
 	if (!FileAccess::exists(sln_path)) {
 		Ref<FileAccess> f_sln = FileAccess::open(sln_path, FileAccess::WRITE);
 		if (f_sln.is_valid()) {
-			String sln_guid = "{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}";
-			String proj_guid = "{93A60A40-9366-4198-8954-4B38437D3315}";
 			String sln_content =
 					"Microsoft Visual Studio Solution File, Format Version 12.00\n"
 					"# Visual Studio Version 17\n"
-					"Project(\"" + sln_guid + "\") = \"" + project_name + "\", \"" + project_name + ".csproj\", \"" + proj_guid + "\"\n"
+					"VisualStudioVersion = 17.0.31903.59\n"
+					"MinimumVisualStudioVersion = 10.0.40219.1\n"
+					"Project(\"{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}\") = \"" + project_name + "\", \"" + project_name + ".csproj\", \"{28A25368-2458-4B52-BF01-1C2EE5DC22FF}\"\n"
 					"EndProject\n"
 					"Global\n"
 					"	GlobalSection(SolutionConfigurationPlatforms) = preSolution\n"
 					"		Debug|Any CPU = Debug|Any CPU\n"
 					"		ExportDebug|Any CPU = ExportDebug|Any CPU\n"
 					"		ExportRelease|Any CPU = ExportRelease|Any CPU\n"
+					"	EndGlobalSection\n"
+					"	GlobalSection(ProjectConfigurationPlatforms) = postSolution\n"
+					"		{28A25368-2458-4B52-BF01-1C2EE5DC22FF}.Debug|Any CPU.ActiveCfg = Debug|Any CPU\n"
+					"		{28A25368-2458-4B52-BF01-1C2EE5DC22FF}.Debug|Any CPU.Build.0 = Debug|Any CPU\n"
+					"		{28A25368-2458-4B52-BF01-1C2EE5DC22FF}.ExportDebug|Any CPU.ActiveCfg = ExportDebug|Any CPU\n"
+					"		{28A25368-2458-4B52-BF01-1C2EE5DC22FF}.ExportDebug|Any CPU.Build.0 = ExportDebug|Any CPU\n"
+					"		{28A25368-2458-4B52-BF01-1C2EE5DC22FF}.ExportRelease|Any CPU.ActiveCfg = ExportRelease|Any CPU\n"
+					"		{28A25368-2458-4B52-BF01-1C2EE5DC22FF}.ExportRelease|Any CPU.Build.0 = ExportRelease|Any CPU\n"
 					"	EndGlobalSection\n"
 					"EndGlobal\n";
 			f_sln->store_string(sln_content);
@@ -254,7 +262,6 @@ void sync_all_android_native_libs() {
 void setup_android_dotnet_environment() {
 	String mono_dir = "/storage/emulated/0/mono";
 
-	// 1. Siguraduhing may dotnet executable dummy script
 	String dotnet_bin = mono_dir.path_join("dotnet");
 	if (!FileAccess::exists(dotnet_bin)) {
 		Ref<FileAccess> f = FileAccess::open(dotnet_bin, FileAccess::WRITE);
@@ -268,11 +275,9 @@ void setup_android_dotnet_environment() {
 		}
 	}
 
-	// 2. I-link o kopyahin ang SDK folder kung sakaling 8.0.402 ito at hindi 8.0.8
 	String sdk_base = mono_dir.path_join("sdk");
 	String target_sdk = sdk_base.path_join("8.0.8");
 	if (!DirAccess::exists(target_sdk)) {
-		// Maghanap ng kahit anong SDK folder sa loob ng sdk/
 		Ref<DirAccess> da = DirAccess::open(sdk_base);
 		if (da.is_valid()) {
 			da->list_dir_begin();
@@ -289,7 +294,6 @@ void setup_android_dotnet_environment() {
 		}
 	}
 
-	// 3. Hanapin ang Sdks folder para sa MSBuild
 	String msbuild_sdks_path = target_sdk.path_join("Sdks");
 	if (!DirAccess::exists(msbuild_sdks_path)) {
 		msbuild_sdks_path = mono_dir.path_join("sdk/8.0.402/Sdks");
@@ -298,7 +302,6 @@ void setup_android_dotnet_environment() {
 		msbuild_sdks_path = mono_dir.path_join("Sdks");
 	}
 
-	// 4. Set environment variables
 	OS::get_singleton()->set_environment("DOTNET_ROOT", mono_dir);
 	OS::get_singleton()->set_environment("DOTNET_HOST_PATH", dotnet_bin);
 	OS::get_singleton()->set_environment("MSBuildSDKsPath", msbuild_sdks_path);
@@ -316,7 +319,10 @@ void setup_android_dotnet_environment() {
 
 #if defined(ANDROID_ENABLED) && defined(TOOLS_ENABLED)
 bool compile_csharp_project_on_android() {
+	String project_name = get_csharp_project_name();
 	String project_dir = ProjectSettings::get_singleton()->globalize_path("res://");
+	String csproj_file = project_dir.path_join(project_name + ".csproj");
+
 	write_mono_log(".NET: [AutoBuild] Contacting background compiler for: " + project_dir);
 
 	int sock = socket(AF_INET, SOCK_STREAM, 0);
@@ -342,7 +348,8 @@ bool compile_csharp_project_on_android() {
 		return false;
 	}
 
-	String req = "GET /?path=" + project_dir.uri_encode() + " HTTP/1.1\r\nHost: 127.0.0.1:8088\r\nConnection: close\r\n\r\n";
+	String query_params = "?path=" + project_dir.uri_encode() + "&proj=" + csproj_file.uri_encode();
+	String req = "GET /" + query_params + " HTTP/1.1\r\nHost: 127.0.0.1:8088\r\nConnection: close\r\n\r\n";
 	send(sock, req.utf8().get_data(), req.utf8().length(), 0);
 
 	char buffer[1024];
@@ -814,13 +821,9 @@ void GDMono::initialize() {
 	write_mono_log("================= GDMono::initialize() =================");
 
 #if defined(ANDROID_ENABLED)
-	// 1. I-sync ang mga native .so libraries
 	sync_all_android_native_libs();
-
-	// 2. I-set up ang .NET/MSBuild environment variables at SDK fallback
 	setup_android_dotnet_environment();
 
-	// 3. I-redirect ang POSIX stdout at stderr direkta sa mono_log.txt
 	int log_fd = open("/storage/emulated/0/mono/mono_log.txt", O_WRONLY | O_CREAT | O_APPEND, 0666);
 	if (log_fd >= 0) {
 		dup2(log_fd, STDOUT_FILENO);
@@ -988,13 +991,15 @@ bool GDMono::_load_project_assembly() {
 
 	Vector<String> probe_directories;
 #if defined(ANDROID_ENABLED)
-	probe_directories.push_back("/storage/emulated/0/Documents/for testing/.godot/mono/temp/bin/Debug");
+	probe_directories.push_back(ProjectSettings::get_singleton()->globalize_path("res://.godot/mono/temp/bin/Debug"));
 	probe_directories.push_back("/storage/emulated/0/Documents/" + base_name + "/.godot/mono/temp/bin/Debug");
 	probe_directories.push_back("/storage/emulated/0/Documents/" + base_name.replace(" ", "-") + "/.godot/mono/temp/bin/Debug");
+	probe_directories.push_back("/storage/emulated/0/Documents/for testing/.godot/mono/temp/bin/Debug");
 	probe_directories.push_back("/storage/emulated/0/mono/assemblies");
 	probe_directories.push_back(OS::get_singleton()->get_user_data_dir().path_join("mono/assemblies"));
-#endif
+#else
 	probe_directories.push_back(ProjectSettings::get_singleton()->globalize_path("res://.godot/mono/temp/bin/Debug"));
+#endif
 
 	String found_path;
 	for (int i = 0; i < probe_directories.size(); i++) {
