@@ -1539,7 +1539,9 @@ void ScriptEditor::trigger_live_script_reload(const String &p_script_path) {
 			reloaded_script = ResourceLoader::load(p_script_path);
 		}
 		if (reloaded_script.is_valid()) {
-			if (!reloaded_script->get_language()->get_editor_language()->validate(reloaded_script->get_source_code(), p_script_path, nullptr, nullptr, nullptr, nullptr)) {
+			// CRASH FIX: Tiyaking hindi nullptr ang get_editor_language() dahil walang editor language ang C#
+			EditorLanguage *el = reloaded_script->get_language()->get_editor_language();
+			if (el && !el->validate(reloaded_script->get_source_code(), p_script_path, nullptr, nullptr, nullptr, nullptr)) {
 				// Script has errors, don't live reload.
 				return;
 			}
