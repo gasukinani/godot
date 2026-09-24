@@ -114,7 +114,8 @@ String get_csharp_project_name() {
 #ifdef TOOLS_ENABLED
 void ensure_csharp_project_files_exist() {
 	String project_name = get_csharp_project_name();
-	String csproj_path = ProjectSettings::get_singleton()->globalize_path("res://" + project_name + ".csproj");
+	String project_dir = ProjectSettings::get_singleton()->globalize_path("res://");
+	String csproj_path = project_dir.path_join(project_name + ".csproj");
 
 	if (!FileAccess::exists(csproj_path)) {
 		Ref<FileAccess> f = FileAccess::open(csproj_path, FileAccess::WRITE);
@@ -132,8 +133,42 @@ void ensure_csharp_project_files_exist() {
 		}
 	}
 
-	String bin_dir = ProjectSettings::get_singleton()->globalize_path("res://.godot/mono/temp/bin/Debug");
+	// 1. Tiyaking may bin directory ang project
+	String bin_dir = project_dir.path_join(".godot/mono/temp/bin/Debug");
 	DirAccess::make_dir_recursive_absolute(bin_dir);
+
+	// 2. Tiyaking may GodotSharp/Tools folder sa loob ng project
+	String tools_dir = project_dir.path_join("GodotSharp/Tools");
+	DirAccess::make_dir_recursive_absolute(tools_dir);
+
+	// 3. I-sync ang lahat ng GodotSharp, GodotTools, at GodotPlugins DLLs mula sa storage
+	String mono_src_dir = "/storage/emulated/0/mono/assemblies";
+	if (!DirAccess::exists(mono_src_dir)) {
+		mono_src_dir = "/storage/emulated/0/mono";
+	}
+
+	Ref<DirAccess> da = DirAccess::open(mono_src_dir);
+	if (da.is_valid()) {
+		da->list_dir_begin();
+		for (String file = da->get_next(); !file.is_empty(); file = da->get_next()) {
+			if (!da->current_is_dir() && file.ends_with(".dll")) {
+				// Kopyahin sa bin/Debug
+				String dst_bin = bin_dir.path_join(file);
+				if (!FileAccess::exists(dst_bin)) {
+					DirAccess::copy_absolute(mono_src_dir.path_join(file), dst_bin);
+				}
+
+				// Kopyahin sa GodotSharp/Tools
+				if (file.begins_with("GodotTools") || file.begins_with("GodotSharp") || file.begins_with("GodotPlugins")) {
+					String dst_tools = tools_dir.path_join(file);
+					if (!FileAccess::exists(dst_tools)) {
+						DirAccess::copy_absolute(mono_src_dir.path_join(file), dst_tools);
+					}
+				}
+			}
+		}
+		write_mono_log(".NET: Synced GodotSharp & GodotTools assemblies to project.");
+	}
 }
 #endif
 
