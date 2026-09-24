@@ -34,13 +34,13 @@
 #include "core/templates/hash_set.h"
 
 #ifdef UNIX_ENABLED
+#include <arpa/inet.h>
 #include <dlfcn.h>
 #include <fcntl.h>
-#include <unistd.h>
-#include <sys/stat.h>
-#include <sys/socket.h>
 #include <netinet/in.h>
-#include <arpa/inet.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #endif
 
 #ifdef ANDROID_ENABLED
@@ -117,6 +117,7 @@ void ensure_csharp_project_files_exist() {
 	String project_name = get_csharp_project_name();
 	String project_dir = ProjectSettings::get_singleton()->globalize_path("res://");
 	String csproj_path = project_dir.path_join(project_name + ".csproj");
+	String sln_path = project_dir.path_join(project_name + ".sln");
 
 	if (!FileAccess::exists(csproj_path)) {
 		Ref<FileAccess> f = FileAccess::open(csproj_path, FileAccess::WRITE);
@@ -131,6 +132,29 @@ void ensure_csharp_project_files_exist() {
 			f->store_string(csproj_content);
 			f->close();
 			write_mono_log(".NET: Created auto-generated project file: " + csproj_path);
+		}
+	}
+
+	if (!FileAccess::exists(sln_path)) {
+		Ref<FileAccess> f_sln = FileAccess::open(sln_path, FileAccess::WRITE);
+		if (f_sln.is_valid()) {
+			String sln_guid = "{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}";
+			String proj_guid = "{93A60A40-9366-4198-8954-4B38437D3315}";
+			String sln_content =
+					"Microsoft Visual Studio Solution File, Format Version 12.00\n"
+					"# Visual Studio Version 17\n"
+					"Project(\"" + sln_guid + "\") = \"" + project_name + "\", \"" + project_name + ".csproj\", \"" + proj_guid + "\"\n"
+					"EndProject\n"
+					"Global\n"
+					"	GlobalSection(SolutionConfigurationPlatforms) = preSolution\n"
+					"		Debug|Any CPU = Debug|Any CPU\n"
+					"		ExportDebug|Any CPU = ExportDebug|Any CPU\n"
+					"		ExportRelease|Any CPU = ExportRelease|Any CPU\n"
+					"	EndGlobalSection\n"
+					"EndGlobal\n";
+			f_sln->store_string(sln_content);
+			f_sln->close();
+			write_mono_log(".NET: Created auto-generated solution file: " + sln_path);
 		}
 	}
 
@@ -225,6 +249,68 @@ void sync_all_android_native_libs() {
 			}
 		}
 	}
+}
+
+void setup_android_dotnet_environment() {
+	String mono_dir = "/storage/emulated/0/mono";
+
+	// 1. Siguraduhing may dotnet executable dummy script
+	String dotnet_bin = mono_dir.path_join("dotnet");
+	if (!FileAccess::exists(dotnet_bin)) {
+		Ref<FileAccess> f = FileAccess::open(dotnet_bin, FileAccess::WRITE);
+		if (f.is_valid()) {
+			f->store_string("#!/bin/sh\necho \"8.0.8\"\n");
+			f->close();
+#ifdef UNIX_ENABLED
+			chmod(dotnet_bin.utf8().get_data(), 0777);
+#endif
+			write_mono_log(".NET: Created fallback dotnet launcher script.");
+		}
+	}
+
+	// 2. I-link o kopyahin ang SDK folder kung sakaling 8.0.402 ito at hindi 8.0.8
+	String sdk_base = mono_dir.path_join("sdk");
+	String target_sdk = sdk_base.path_join("8.0.8");
+	if (!DirAccess::exists(target_sdk)) {
+		// Maghanap ng kahit anong SDK folder sa loob ng sdk/
+		Ref<DirAccess> da = DirAccess::open(sdk_base);
+		if (da.is_valid()) {
+			da->list_dir_begin();
+			for (String dir = da->get_next(); !dir.is_empty(); dir = da->get_next()) {
+				if (da->current_is_dir() && dir != "." && dir != ".." && dir.begins_with("8.0.")) {
+					String existing_sdk = sdk_base.path_join(dir);
+					write_mono_log(".NET: Linking SDK " + dir + " to 8.0.8...");
+#ifdef UNIX_ENABLED
+					symlink(existing_sdk.utf8().get_data(), target_sdk.utf8().get_data());
+#endif
+					break;
+				}
+			}
+		}
+	}
+
+	// 3. Hanapin ang Sdks folder para sa MSBuild
+	String msbuild_sdks_path = target_sdk.path_join("Sdks");
+	if (!DirAccess::exists(msbuild_sdks_path)) {
+		msbuild_sdks_path = mono_dir.path_join("sdk/8.0.402/Sdks");
+	}
+	if (!DirAccess::exists(msbuild_sdks_path)) {
+		msbuild_sdks_path = mono_dir.path_join("Sdks");
+	}
+
+	// 4. Set environment variables
+	OS::get_singleton()->set_environment("DOTNET_ROOT", mono_dir);
+	OS::get_singleton()->set_environment("DOTNET_HOST_PATH", dotnet_bin);
+	OS::get_singleton()->set_environment("MSBuildSDKsPath", msbuild_sdks_path);
+	OS::get_singleton()->set_environment("MSBUILD_EXE_PATH", mono_dir.path_join("assemblies/GodotTools.ProjectEditor.dll"));
+	OS::get_singleton()->set_environment("MSBUILDUSESERVER", "0");
+	OS::get_singleton()->set_environment("MSBUILDDISABLENODEREUSE", "1");
+	OS::get_singleton()->set_environment("DOTNET_CLI_TELEMETRY_OPTOUT", "1");
+	OS::get_singleton()->set_environment("DOTNET_MULTILEVEL_LOOKUP", "0");
+	OS::get_singleton()->set_environment("DOTNET_GCHeapHardLimit", "1C0000000");
+	OS::get_singleton()->set_environment("COREHOST_TRACE", "0");
+
+	write_mono_log(".NET: Environment variables set. MSBuildSDKsPath: " + msbuild_sdks_path);
 }
 #endif
 
@@ -728,23 +814,19 @@ void GDMono::initialize() {
 	write_mono_log("================= GDMono::initialize() =================");
 
 #if defined(ANDROID_ENABLED)
-	// 1. I-sync ang LAHAT ng native .so shims mula sa external storage papuntang internal mono_libs
+	// 1. I-sync ang mga native .so libraries
 	sync_all_android_native_libs();
 
-	// 2. I-redirect ang POSIX stdout at stderr direkta sa mono_log.txt
+	// 2. I-set up ang .NET/MSBuild environment variables at SDK fallback
+	setup_android_dotnet_environment();
+
+	// 3. I-redirect ang POSIX stdout at stderr direkta sa mono_log.txt
 	int log_fd = open("/storage/emulated/0/mono/mono_log.txt", O_WRONLY | O_CREAT | O_APPEND, 0666);
 	if (log_fd >= 0) {
 		dup2(log_fd, STDOUT_FILENO);
 		dup2(log_fd, STDERR_FILENO);
 		close(log_fd);
 	}
-
-	OS::get_singleton()->set_environment("DOTNET_ROOT", "/storage/emulated/0/mono");
-	OS::get_singleton()->set_environment("DOTNET_CLI_TELEMETRY_OPTOUT", "1");
-	OS::get_singleton()->set_environment("DOTNET_MULTILEVEL_LOOKUP", "0");
-	OS::get_singleton()->set_environment("DOTNET_GCHeapHardLimit", "1C0000000");
-	OS::get_singleton()->set_environment("COREHOST_TRACE", "1");
-	OS::get_singleton()->set_environment("COREHOST_TRACEFILE", "/storage/emulated/0/mono/hostfxr_trace.log");
 #endif
 
 	_init_godot_api_hashes();
@@ -814,7 +896,6 @@ void GDMono::initialize() {
 	gdmono::PluginCallbacks plugin_callbacks_res;
 	write_mono_log(".NET: Calling godot_plugins_initialize()...");
 
-	// Ibalik ang orihinal na editor hint para ma-load ang GodotSharpEditor.dll
 	bool init_ok = godot_plugins_initialize(godot_dll_handle,
 			Engine::get_singleton()->is_editor_hint(),
 			&plugin_callbacks_res, &managed_callbacks,
@@ -824,7 +905,6 @@ void GDMono::initialize() {
 		ERR_PRINT(".NET: GodotPlugins initialization failed. Check /storage/emulated/0/mono/mono_log.txt");
 		return;
 	}
-	// Ibalik ang buong orihinal na plugin callbacks nang walang dummy modification
 	plugin_callbacks = plugin_callbacks_res;
 
 #else
@@ -941,15 +1021,15 @@ bool GDMono::_load_project_assembly() {
 
 	write_mono_log(".NET: SUCCESS! Found project assembly: " + found_path);
 	write_mono_log(".NET: Invoking LoadProjectAssemblyCallback...");
-	
+
 	fflush(stdout);
 	fflush(stderr);
 
 	Char16String path_utf16 = found_path.utf16();
 	String loaded_assembly_path;
-	
+
 	bool success = plugin_callbacks.LoadProjectAssemblyCallback(
-			(const char16_t *)path_utf16.get_data(), 
+			(const char16_t *)path_utf16.get_data(),
 			&loaded_assembly_path);
 
 	fflush(stdout);
