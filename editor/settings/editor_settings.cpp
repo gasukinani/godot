@@ -1,31 +1,6 @@
+
 /**************************************************************************/
 /*  editor_settings.cpp                                                   */
-/**************************************************************************/
-/*                         This file is part of:                          */
-/*                             GODOT ENGINE                               */
-/*                        https://godotengine.org                         */
-/**************************************************************************/
-/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
-/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
-/*                                                                        */
-/* Permission is hereby granted, free of charge, to any person obtaining  */
-/* a copy of this software and associated documentation files (the        */
-/* "Software"), to deal in the Software without restriction, including    */
-/* without limitation the rights to use, copy, modify, merge, publish,    */
-/* distribute, sublicense, and/or sell copies of the Software, and to     */
-/* permit persons to whom the Software is furnished to do so, subject to  */
-/* the following conditions:                                              */
-/*                                                                        */
-/* The above copyright notice and this permission notice shall be         */
-/* included in all copies or substantial portions of the Software.        */
-/*                                                                        */
-/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
-/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
-/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
-/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
-/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
-/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
-/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
 #include "editor_settings.h"
@@ -617,23 +592,33 @@ void EditorSettings::_load_defaults(Ref<ConfigFile> p_extra_config) {
 	EDITOR_SETTING_BASIC(Variant::INT, PROPERTY_HINT_ENUM, "interface/inspector/default_color_picker_shape", (int32_t)ColorPicker::SHAPE_VHS_CIRCLE, "HSV Rectangle,HSV Rectangle Wheel,VHS Circle,OKHSL Circle,OK HS Rectangle:5,OK HL Rectangle") // `SHAPE_NONE` is 4.
 	EDITOR_SETTING_BASIC(Variant::BOOL, PROPERTY_HINT_NONE, "interface/inspector/color_picker_show_intensity", true, "");
 
-	// Theme
+	// Theme - MODERN CATPPUCCIN MOCHA / TOKYO NIGHT HYBRID
 	EDITOR_SETTING_BASIC(Variant::BOOL, PROPERTY_HINT_ENUM, "interface/theme/follow_system_theme", false, "")
 	EDITOR_SETTING_BASIC(Variant::STRING, PROPERTY_HINT_ENUM, "interface/theme/style", "Modern", "Modern,Classic")
 	EDITOR_SETTING_BASIC(Variant::STRING, PROPERTY_HINT_ENUM, "interface/theme/color_preset", "Default", "Default,Breeze Dark,Godot 2,Godot 3,Gray,Light,Solarized (Dark),Solarized (Light),Black (OLED),Custom")
 	EDITOR_SETTING_BASIC(Variant::STRING, PROPERTY_HINT_ENUM, "interface/theme/spacing_preset", "Default", "Compact,Default,Spacious,Custom")
 	EDITOR_SETTING(Variant::INT, PROPERTY_HINT_ENUM, "interface/theme/icon_and_font_color", 0, "Auto,Dark,Light")
-	EDITOR_SETTING_BASIC(Variant::COLOR, PROPERTY_HINT_NONE, "interface/theme/base_color", Color(0.14, 0.14, 0.14), "")
-	EDITOR_SETTING_BASIC(Variant::COLOR, PROPERTY_HINT_NONE, "interface/theme/accent_color", Color(0.34, 0.62, 1.0), "")
+
+	// 1. Deep Slate Blue-Black UI Background (#1e1e2e)
+	EDITOR_SETTING_BASIC(Variant::COLOR, PROPERTY_HINT_NONE, "interface/theme/base_color", Color(0.118, 0.122, 0.180), "")
+
+	// 2. Vibrant Sapphire Accent (#89b4fa)
+	EDITOR_SETTING_BASIC(Variant::COLOR, PROPERTY_HINT_NONE, "interface/theme/accent_color", Color(0.537, 0.706, 0.980), "")
 	EDITOR_SETTING_BASIC(Variant::BOOL, PROPERTY_HINT_NONE, "interface/theme/use_system_accent_color", false, "")
-	EDITOR_SETTING_BASIC(Variant::FLOAT, PROPERTY_HINT_RANGE, "interface/theme/contrast", 0.3, "-1,1,0.01")
+
+	// 3. Smooth Contrast at Modern Rounded UI
+	EDITOR_SETTING_BASIC(Variant::FLOAT, PROPERTY_HINT_RANGE, "interface/theme/contrast", 0.26, "-1,1,0.01")
 	EDITOR_SETTING(Variant::BOOL, PROPERTY_HINT_NONE, "interface/theme/draw_extra_borders", false, "")
-	EDITOR_SETTING(Variant::FLOAT, PROPERTY_HINT_RANGE, "interface/theme/icon_saturation", 2.0, "0,2,0.01")
-	EDITOR_SETTING(Variant::INT, PROPERTY_HINT_ENUM, "interface/theme/draw_relationship_lines", (int32_t)EditorThemeManager::RELATIONSHIP_SELECTED_ONLY, "None,Selected Only,All")
-	EDITOR_SETTING(Variant::FLOAT, PROPERTY_HINT_RANGE, "interface/theme/relationship_line_opacity", 0.1, "0.00,1,0.01")
+	EDITOR_SETTING(Variant::FLOAT, PROPERTY_HINT_RANGE, "interface/theme/icon_saturation", 1.4, "0,2,0.01")
+
+	// 4. Mas malinaw na Tree Hierarchy Lines para sa Scene Tree
+	EDITOR_SETTING(Variant::INT, PROPERTY_HINT_ENUM, "interface/theme/draw_relationship_lines", (int32_t)EditorThemeManager::RELATIONSHIP_ALL, "None,Selected Only,All")
+	EDITOR_SETTING(Variant::FLOAT, PROPERTY_HINT_RANGE, "interface/theme/relationship_line_opacity", 0.30, "0.00,1,0.01")
+
+	// 5. Rounded Corners (Radius 6) at Mas magandang Touch Spacing
 	EDITOR_SETTING(Variant::INT, PROPERTY_HINT_RANGE, "interface/theme/border_size", 0, "0,2,1")
-	EDITOR_SETTING(Variant::INT, PROPERTY_HINT_RANGE, "interface/theme/corner_radius", 4, "0,6,1")
-	EDITOR_SETTING(Variant::INT, PROPERTY_HINT_RANGE, "interface/theme/base_spacing", 4, "0,8,1")
+	EDITOR_SETTING(Variant::INT, PROPERTY_HINT_RANGE, "interface/theme/corner_radius", 6, "0,6,1")
+	EDITOR_SETTING(Variant::INT, PROPERTY_HINT_RANGE, "interface/theme/base_spacing", 5, "0,8,1")
 	EDITOR_SETTING(Variant::INT, PROPERTY_HINT_RANGE, "interface/theme/additional_spacing", 0, "0,8,1")
 	EDITOR_SETTING_BASIC(Variant::BOOL, PROPERTY_HINT_NONE, "interface/theme/use_monospace_font_for_editor_symbols", true, "")
 	EDITOR_SETTING_USAGE(Variant::STRING, PROPERTY_HINT_GLOBAL_FILE, "interface/theme/custom_theme", "", "*.res,*.tres,*.theme", PROPERTY_USAGE_DEFAULT)
@@ -1931,61 +1916,71 @@ void EditorSettings::load_favorites_and_recent_dirs() {
 }
 
 HashMap<StringName, Color> EditorSettings::get_godot2_text_editor_theme() {
-	// Godot 2 is only a dark theme; it doesn't have a light theme counterpart.
 	HashMap<StringName, Color> colors;
-	colors["text_editor/theme/highlighting/symbol_color"] = Color(0.73, 0.87, 1.0);
-	colors["text_editor/theme/highlighting/keyword_color"] = Color(1.0, 1.0, 0.7);
-	colors["text_editor/theme/highlighting/control_flow_keyword_color"] = Color(1.0, 0.85, 0.7);
-	colors["text_editor/theme/highlighting/base_type_color"] = Color(0.64, 1.0, 0.83);
-	colors["text_editor/theme/highlighting/engine_type_color"] = Color(0.51, 0.83, 1.0);
-	colors["text_editor/theme/highlighting/user_type_color"] = Color(0.42, 0.67, 0.93);
-	colors["text_editor/theme/highlighting/comment_color"] = Color(0.4, 0.4, 0.4);
-	colors["text_editor/theme/highlighting/doc_comment_color"] = Color(0.5, 0.6, 0.7);
-	colors["text_editor/theme/highlighting/string_color"] = Color(0.94, 0.43, 0.75);
-	colors["text_editor/theme/highlighting/string_placeholder_color"] = Color(1, 0.75, 0.4);
-	colors["text_editor/theme/highlighting/background_color"] = Color(0.13, 0.12, 0.15);
-	colors["text_editor/theme/highlighting/completion_background_color"] = Color(0.17, 0.16, 0.2);
-	colors["text_editor/theme/highlighting/completion_selected_color"] = Color(0.26, 0.26, 0.27);
-	colors["text_editor/theme/highlighting/completion_existing_color"] = Color(0.87, 0.87, 0.87, 0.13);
-	colors["text_editor/theme/highlighting/completion_scroll_color"] = Color(1, 1, 1, 0.29);
-	colors["text_editor/theme/highlighting/completion_scroll_hovered_color"] = Color(1, 1, 1, 0.4);
-	colors["text_editor/theme/highlighting/completion_font_color"] = Color(0.67, 0.67, 0.67);
-	colors["text_editor/theme/highlighting/text_color"] = Color(0.67, 0.67, 0.67);
-	colors["text_editor/theme/highlighting/line_number_color"] = Color(0.67, 0.67, 0.67, 0.4);
-	colors["text_editor/theme/highlighting/safe_line_number_color"] = Color(0.67, 0.78, 0.67, 0.6);
-	colors["text_editor/theme/highlighting/caret_color"] = Color(0.67, 0.67, 0.67);
+
+	// Code Editor Canvas Colors (Catppuccin Crust / Mantle)
+	colors["text_editor/theme/highlighting/background_color"] = Color(0.094, 0.094, 0.145);
+	colors["text_editor/theme/highlighting/text_color"] = Color(0.804, 0.839, 0.957);
+	colors["text_editor/theme/highlighting/line_number_color"] = Color(0.424, 0.439, 0.525, 0.7);
+	colors["text_editor/theme/highlighting/safe_line_number_color"] = Color(0.651, 0.890, 0.631, 0.8);
+	colors["text_editor/theme/highlighting/caret_color"] = Color(0.961, 0.859, 0.961);
 	colors["text_editor/theme/highlighting/caret_background_color"] = Color(0, 0, 0);
 	colors["text_editor/theme/highlighting/text_selected_color"] = Color(0, 0, 0, 0);
-	colors["text_editor/theme/highlighting/selection_color"] = Color(0.41, 0.61, 0.91, 0.35);
-	colors["text_editor/theme/highlighting/brace_mismatch_color"] = Color(1, 0.2, 0.2);
-	colors["text_editor/theme/highlighting/current_line_color"] = Color(0.3, 0.5, 0.8, 0.15);
+	colors["text_editor/theme/highlighting/selection_color"] = Color(0.345, 0.392, 0.549, 0.45);
+	colors["text_editor/theme/highlighting/current_line_color"] = Color(0.20, 0.21, 0.30, 0.35);
 	colors["text_editor/theme/highlighting/line_length_guideline_color"] = Color(0.3, 0.5, 0.8, 0.1);
-	colors["text_editor/theme/highlighting/word_highlighted_color"] = Color(0.8, 0.9, 0.9, 0.15);
-	colors["text_editor/theme/highlighting/number_color"] = Color(0.92, 0.58, 0.2);
-	colors["text_editor/theme/highlighting/function_color"] = Color(0.4, 0.64, 0.81);
-	colors["text_editor/theme/highlighting/member_variable_color"] = Color(0.9, 0.31, 0.35);
+	colors["text_editor/theme/highlighting/word_highlighted_color"] = Color(0.537, 0.706, 0.980, 0.2);
+
+	// Syntax Elements
+	colors["text_editor/theme/highlighting/symbol_color"] = Color(0.557, 0.827, 0.925);
+	colors["text_editor/theme/highlighting/keyword_color"] = Color(0.796, 0.651, 0.969);
+	colors["text_editor/theme/highlighting/control_flow_keyword_color"] = Color(0.953, 0.545, 0.659);
+	colors["text_editor/theme/highlighting/base_type_color"] = Color(0.976, 0.886, 0.686);
+	colors["text_editor/theme/highlighting/engine_type_color"] = Color(0.980, 0.702, 0.529);
+	colors["text_editor/theme/highlighting/user_type_color"] = Color(0.976, 0.886, 0.686);
+	colors["text_editor/theme/highlighting/function_color"] = Color(0.537, 0.706, 0.980);
+	colors["text_editor/theme/highlighting/member_variable_color"] = Color(0.965, 0.765, 0.859);
+	colors["text_editor/theme/highlighting/string_color"] = Color(0.651, 0.890, 0.631);
+	colors["text_editor/theme/highlighting/string_placeholder_color"] = Color(0.980, 0.702, 0.529);
+	colors["text_editor/theme/highlighting/number_color"] = Color(0.980, 0.702, 0.529);
+	colors["text_editor/theme/highlighting/comment_color"] = Color(0.424, 0.439, 0.525);
+	colors["text_editor/theme/highlighting/doc_comment_color"] = Color(0.55, 0.57, 0.67);
+
+	// Autocomplete & Popups
+	colors["text_editor/theme/highlighting/completion_background_color"] = Color(0.12, 0.12, 0.18);
+	colors["text_editor/theme/highlighting/completion_selected_color"] = Color(0.24, 0.25, 0.35);
+	colors["text_editor/theme/highlighting/completion_existing_color"] = Color(0.89, 0.71, 0.98, 0.2);
+	colors["text_editor/theme/highlighting/completion_scroll_color"] = Color(1, 1, 1, 0.3);
+	colors["text_editor/theme/highlighting/completion_scroll_hovered_color"] = Color(1, 1, 1, 0.5);
+	colors["text_editor/theme/highlighting/completion_font_color"] = Color(0.85, 0.88, 0.95);
+
+	// Warnings, Errors & Debugging
+	colors["text_editor/theme/highlighting/brace_mismatch_color"] = Color(0.95, 0.35, 0.45);
 	colors["text_editor/theme/highlighting/mark_color"] = Color(1.0, 0.4, 0.4, 0.4);
 	colors["text_editor/theme/highlighting/warning_color"] = Color(1.0, 0.8, 0.4, 0.1);
-	colors["text_editor/theme/highlighting/bookmark_color"] = Color(0.08, 0.49, 0.98);
-	colors["text_editor/theme/highlighting/breakpoint_color"] = Color(0.9, 0.29, 0.3);
-	colors["text_editor/theme/highlighting/executing_line_color"] = Color(0.98, 0.89, 0.27);
+	colors["text_editor/theme/highlighting/bookmark_color"] = Color(0.537, 0.706, 0.980);
+	colors["text_editor/theme/highlighting/breakpoint_color"] = Color(0.953, 0.545, 0.659);
+	colors["text_editor/theme/highlighting/executing_line_color"] = Color(0.976, 0.886, 0.686, 0.6);
 	colors["text_editor/theme/highlighting/code_folding_color"] = Color(0.8, 0.8, 0.8, 0.8);
 	colors["text_editor/theme/highlighting/folded_code_region_color"] = Color(0.68, 0.46, 0.77, 0.2);
-	colors["text_editor/theme/highlighting/search_result_color"] = Color(0.05, 0.25, 0.05, 1);
-	colors["text_editor/theme/highlighting/search_result_border_color"] = Color(0.41, 0.61, 0.91, 0.38);
-	colors["text_editor/theme/highlighting/gdscript/function_definition_color"] = Color(0.4, 0.9, 1.0);
+	colors["text_editor/theme/highlighting/search_result_color"] = Color(0.537, 0.706, 0.980, 0.3);
+	colors["text_editor/theme/highlighting/search_result_border_color"] = Color(0.537, 0.706, 0.980, 0.8);
+	colors["text_editor/theme/highlighting/warning_underline_color"] = Color(0.976, 0.886, 0.686);
+	colors["text_editor/theme/highlighting/error_underline_color"] = Color(0.953, 0.545, 0.659);
 
-	colors["text_editor/theme/highlighting/gdscript/global_function_color"] = Color(0.64, 0.64, 0.96);
-	colors["text_editor/theme/highlighting/gdscript/node_path_color"] = Color(0.72, 0.77, 0.49);
-	colors["text_editor/theme/highlighting/gdscript/node_reference_color"] = Color(0.39, 0.76, 0.35);
-	colors["text_editor/theme/highlighting/gdscript/annotation_color"] = Color(1.0, 0.7, 0.45);
-	colors["text_editor/theme/highlighting/gdscript/string_name_color"] = Color(1.0, 0.76, 0.65);
-	colors["text_editor/theme/highlighting/comment_markers/critical_color"] = Color(0.77, 0.35, 0.35);
-	colors["text_editor/theme/highlighting/comment_markers/warning_color"] = Color(0.72, 0.61, 0.48);
-	colors["text_editor/theme/highlighting/comment_markers/notice_color"] = Color(0.56, 0.67, 0.51);
+	// GDScript Specific Highlights
+	colors["text_editor/theme/highlighting/gdscript/function_definition_color"] = Color(0.537, 0.706, 0.980);
+	colors["text_editor/theme/highlighting/gdscript/global_function_color"] = Color(0.557, 0.827, 0.925);
+	colors["text_editor/theme/highlighting/gdscript/node_path_color"] = Color(0.965, 0.765, 0.859);
+	colors["text_editor/theme/highlighting/gdscript/node_reference_color"] = Color(0.651, 0.890, 0.631);
+	colors["text_editor/theme/highlighting/gdscript/annotation_color"] = Color(0.980, 0.702, 0.529);
+	colors["text_editor/theme/highlighting/gdscript/string_name_color"] = Color(0.651, 0.890, 0.631);
 
-	colors["text_editor/theme/highlighting/warning_underline_color"] = Color(0.89, 0.7, 0.2);
-	colors["text_editor/theme/highlighting/error_underline_color"] = Color(1.0, 0.0, 0.0);
+	// Comment Markers (TODO, FIXME, ALERT)
+	colors["text_editor/theme/highlighting/comment_markers/critical_color"] = Color(0.953, 0.545, 0.659);
+	colors["text_editor/theme/highlighting/comment_markers/warning_color"] = Color(0.980, 0.702, 0.529);
+	colors["text_editor/theme/highlighting/comment_markers/notice_color"] = Color(0.557, 0.827, 0.925);
+
 	return colors;
 }
 
