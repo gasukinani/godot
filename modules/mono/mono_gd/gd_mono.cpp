@@ -37,6 +37,9 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 #endif
 
 #ifdef ANDROID_ENABLED
@@ -195,83 +198,55 @@ void sync_all_android_native_libs() {
 #endif
 
 #if defined(ANDROID_ENABLED) && defined(TOOLS_ENABLED)
-void ensure_android_build_environment() {
-	String mono_dir = "/storage/emulated/0/mono";
-	DirAccess::make_dir_recursive_absolute(mono_dir);
-
-	// 1. I-apply ang 755 permissions sa Termux directories para ma-access ng Godot
-	chmod("/data/data/com.termux", 0755);
-	chmod("/data/data/com.termux/files", 0755);
-	chmod("/data/data/com.termux/files/usr", 0755);
-	chmod("/data/data/com.termux/files/usr/bin", 0755);
-	chmod("/data/data/com.termux/files/usr/bin/proot", 0755);
-
-	// 2. Tiyaking may compile.sh sa storage; kung wala, kusa itong gagawin ng Godot
-	String compile_script_path = mono_dir.path_join("compile.sh");
-	if (!FileAccess::exists(compile_script_path)) {
-		Ref<FileAccess> f = FileAccess::open(compile_script_path, FileAccess::WRITE);
-		if (f.is_valid()) {
-			String script_content =
-					"#!/system/bin/sh\n"
-					"PROJECT_DIR=\"$1\"\n\n"
-					"export PREFIX=\"/data/data/com.termux/files/usr\"\n"
-					"export HOME=\"/data/data/com.termux/files/home\"\n"
-					"export PATH=\"$PREFIX/bin:$PATH\"\n"
-					"export TMPDIR=\"$PREFIX/tmp\"\n"
-					"unset LD_PRELOAD\n\n"
-					"$PREFIX/bin/proot-distro login ubuntu --bind /storage:/storage -- bash -c \"cd \\\"$PROJECT_DIR\\\" && dotnet build\"\n";
-			f->store_string(script_content);
-			f->close();
-			write_mono_log(".NET: Auto-generated missing compile script: " + compile_script_path);
-		}
-	}
-
-	// 3. Siguraduhing executable ang compile.sh
-	chmod(compile_script_path.utf8().get_data(), 0755);
-}
-
 bool compile_csharp_project_on_android() {
-	ensure_android_build_environment();
-
 	String project_dir = ProjectSettings::get_singleton()->globalize_path("res://");
-	write_mono_log(".NET: [AutoBuild] Compiling C# project in background: " + project_dir);
+	write_mono_log(".NET: [AutoBuild] Contacting background compiler for: " + project_dir);
 
-	String script_path = "/storage/emulated/0/mono/compile.sh";
-	if (!FileAccess::exists(script_path)) {
-		write_mono_log(".NET: [AutoBuild] ERROR - compile.sh not found!");
+	int sock = socket(AF_INET, SOCK_STREAM, 0);
+	if (sock < 0) {
+		write_mono_log(".NET: [AutoBuild] Socket creation failed.");
 		return false;
 	}
 
-	List<String> args;
-	args.push_back(script_path);
-	args.push_back(project_dir);
+	struct sockaddr_in serv_addr;
+	memset(&serv_addr, 0, sizeof(serv_addr));
+	serv_addr.sin_family = AF_INET;
+	serv_addr.sin_port = htons(8088);
+	inet_pton(AF_INET, "127.0.0.1", &serv_addr.sin_addr);
 
-	String output;
-	int exit_code = -1;
+	// Timeout na 90 seconds para sa build process
+	struct timeval tv;
+	tv.tv_sec = 90;
+	tv.tv_usec = 0;
+	setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tv, sizeof(tv));
 
-	// Patakbuhin gamit ang /system/bin/sh sa background nang hindi binubuksan ang Termux
-	Error err = OS::get_singleton()->execute("/system/bin/sh", args, &output, &exit_code, true);
-
-	// Fallback kung permission-restricted at may 'su' (rooted device)
-	if (err != OK || exit_code != 0) {
-		if (FileAccess::exists("/system/bin/su") || FileAccess::exists("/system/xbin/su")) {
-			write_mono_log(".NET: [AutoBuild] Normal execution restricted, attempting with su...");
-			List<String> su_args;
-			su_args.push_back("-c");
-			su_args.push_back("sh " + script_path + " \"" + project_dir + "\"");
-			err = OS::get_singleton()->execute("su", su_args, &output, &exit_code, true);
-		}
+	if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
+		write_mono_log(".NET: [AutoBuild] Cannot connect to compiler (127.0.0.1:8088). Tumatakbo ba ang autobuild.py sa Termux?");
+		close(sock);
+		return false;
 	}
 
-	write_mono_log(".NET: [AutoBuild Output]:\n" + output);
+	String req = "GET /?path=" + project_dir.uri_encode() + " HTTP/1.1\r\nHost: 127.0.0.1:8088\r\nConnection: close\r\n\r\n";
+	send(sock, req.utf8().get_data(), req.utf8().length(), 0);
 
-	if (exit_code == 0) {
-		write_mono_log(".NET: [AutoBuild] Build SUCCESSFUL!");
+	char buffer[1024];
+	String response;
+	int bytes_read = 0;
+	while ((bytes_read = recv(sock, buffer, sizeof(buffer) - 1, 0)) > 0) {
+		buffer[bytes_read] = '\0';
+		response += String::utf8(buffer);
+	}
+	close(sock);
+
+	write_mono_log(".NET: [AutoBuild Response]:\n" + response);
+
+	if (response.contains("200 OK") || response.contains("BUILD_SUCCESS")) {
+		write_mono_log(".NET: [AutoBuild] Background build SUCCEEDED!");
 		return true;
-	} else {
-		write_mono_log(vformat(".NET: [AutoBuild] Build FAILED with exit code: %d", exit_code));
-		return false;
 	}
+
+	write_mono_log(".NET: [AutoBuild] Background build FAILED.");
+	return false;
 }
 #endif
 
@@ -837,9 +812,6 @@ void GDMono::initialize() {
 
 #ifdef TOOLS_ENABLED
 	ensure_csharp_project_files_exist();
-#if defined(ANDROID_ENABLED)
-	ensure_android_build_environment();
-#endif
 	_try_load_project_assembly();
 #endif
 
@@ -854,13 +826,15 @@ void GDMono::_try_load_project_assembly() {
 	write_mono_log(".NET: Attempting to load project assembly...");
 	if (!_load_project_assembly()) {
 #if defined(ANDROID_ENABLED)
-		write_mono_log(".NET: Project assembly missing. Running automatic background build...");
+		write_mono_log(".NET: Project assembly missing. Triggering background build...");
 		if (compile_csharp_project_on_android()) {
-			_load_project_assembly();
-			return;
+			if (_load_project_assembly()) {
+				return;
+			}
 		}
 #endif
 		write_mono_log(".NET: Notice - Project assembly not yet loaded.");
+		return;
 	}
 }
 #endif
