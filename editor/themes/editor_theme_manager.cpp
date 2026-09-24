@@ -192,8 +192,6 @@ Ref<EditorTheme> EditorThemeManager::_create_base_theme(const Ref<EditorTheme> &
 		// External functions, see editor_icons.cpp.
 		editor_configure_icons(config.dark_icon_and_font);
 
-		// If settings are comparable to the old theme, then just copy existing icons over.
-		// Otherwise, regenerate them.
 		bool keep_old_icons = (p_old_theme.is_valid() && theme->get_generated_icons_hash() == p_old_theme->get_generated_icons_hash());
 		if (keep_old_icons) {
 			print_verbose("EditorTheme: Can keep old icons, copying.");
@@ -210,16 +208,11 @@ Ref<EditorTheme> EditorThemeManager::_create_base_theme(const Ref<EditorTheme> &
 	{
 		OS::get_singleton()->benchmark_begin_measure(get_benchmark_key(), "Register Fonts");
 
-		// TODO: Check if existing font definitions from the old theme are usable and copy them.
-
-		// External function, see editor_fonts.cpp.
 		print_verbose("EditorTheme: Generating new fonts.");
 		editor_register_fonts(theme);
 
 		OS::get_singleton()->benchmark_end_measure(get_benchmark_key(), "Register Fonts");
 	}
-
-	// TODO: Check if existing style definitions from the old theme are usable and copy them.
 
 	print_verbose("EditorTheme: Generating new styles.");
 
@@ -257,7 +250,6 @@ EditorThemeManager::ThemeConfiguration EditorThemeManager::_create_theme_config(
 
 	config.base_spacing = EDITOR_GET("interface/theme/base_spacing");
 	config.extra_spacing = EDITOR_GET("interface/theme/additional_spacing");
-	// Ensure borders are visible when using an editor scale below 100%.
 	config.border_width = CLAMP((int)EDITOR_GET("interface/theme/border_size"), 0, 2) * MAX(1, EDSCALE);
 
 	config.draw_extra_borders = EDITOR_GET("interface/theme/draw_extra_borders");
@@ -271,7 +263,7 @@ EditorThemeManager::ThemeConfiguration EditorThemeManager::_create_theme_config(
 	config.dragging_hover_wait_msec = (float)EDITOR_GET("interface/editor/timers/dragging_hover_wait_seconds") * 1000;
 	config.max_sticky_tree_items = EDITOR_GET("interface/editor/appearance/max_sticky_tree_items");
 
-	// Handle theme style.
+	// Palaging bukas ang relationship lines at may bilugang corners
 	if (config.preset != "Custom") {
 		if (config.style == "Classic") {
 			config.draw_relationship_lines = RELATIONSHIP_ALL;
@@ -284,12 +276,11 @@ EditorThemeManager::ThemeConfiguration EditorThemeManager::_create_theme_config(
 		EditorSettings::get_singleton()->set_initial_value("interface/theme/draw_relationship_lines", config.draw_relationship_lines);
 		EditorSettings::get_singleton()->set_initial_value("interface/theme/corner_radius", config.corner_radius);
 
-		// Enforce values in case they were adjusted or overridden.
 		EditorSettings::get_singleton()->set_manually("interface/theme/draw_relationship_lines", config.draw_relationship_lines);
 		EditorSettings::get_singleton()->set_manually("interface/theme/corner_radius", config.corner_radius);
 	}
 
-	// Handle color presets (kasama ang mga bagong custom themes).
+	// Handle color presets (IN-OVERHAUL LAHAT NG PRESETS SA DROPDOWN):
 	{
 		const bool follow_system_theme = EDITOR_GET("interface/theme/follow_system_theme");
 		const bool use_system_accent_color = EDITOR_GET("interface/theme/use_system_accent_color");
@@ -323,63 +314,51 @@ EditorThemeManager::ThemeConfiguration EditorThemeManager::_create_theme_config(
 
 			const float light_contrast = -0.06;
 
-			// MGA BAGONG CUSTOM THEME PRESETS:
-			if (config.preset == "Catppuccin Mocha") {
-				preset_accent_color = Color(0.796, 0.651, 0.969); // Mauve (#cba6f7)
-				preset_base_color = Color(0.118, 0.118, 0.180);   // Deep Slate (#1e1e2e)
-				preset_contrast = 0.28;
-				preset_icon_saturation = 1.3;
-			} else if (config.preset == "Tokyo Night") {
-				preset_accent_color = Color(0.478, 0.635, 0.969); // Electric Blue (#7aa2f7)
-				preset_base_color = Color(0.102, 0.106, 0.149);   // Midnight Slate (#1a1b26)
-				preset_contrast = 0.32;
-				preset_icon_saturation = 1.4;
-			} else if (config.preset == "Cyberpunk Neon") {
-				preset_accent_color = Color(0.00, 0.95, 0.85);    // Neon Cyan (#00f2d8)
-				preset_base_color = Color(0.06, 0.06, 0.09);      // Dark Synth (#0f0f17)
-				preset_contrast = 0.38;
-				preset_draw_extra_borders = true;
-				preset_icon_saturation = 1.7;
-			} else if (config.preset == "Nord Frost") {
-				preset_accent_color = Color(0.533, 0.753, 0.816); // Frost Blue (#88c0d0)
-				preset_base_color = Color(0.180, 0.204, 0.251);   // Polar Night (#2e3440)
-				preset_contrast = 0.25;
-				preset_icon_saturation = 1.2;
-			} else if (config.preset == "Black (OLED)") {
-				preset_accent_color = Color(0.45, 0.75, 1.0);
-				preset_base_color = Color(0, 0, 0);
+			// INILIPAT ANG MGA BAGONG THEME SA EXISTING DROPDOWN CHOICES NI GODOT:
+			if (config.preset == "Black (OLED)" || config.preset == "Cyberpunk Neon") {
+				// 1. OLED -> CYBERPUNK PURE BLACK & NEON CYAN
+				preset_accent_color = Color(0.00, 0.95, 0.85); // Neon Cyan #00f2d8
+				preset_base_color = Color(0.00, 0.00, 0.00);   // Pure OLED Black
 				preset_contrast = 0.0;
 				preset_draw_extra_borders = true;
-			} else if (config.preset == "Breeze Dark") {
-				preset_accent_color = Color(0.239, 0.682, 0.914);
-				preset_base_color = Color(0.1255, 0.1373, 0.149);
-			} else if (config.preset == "Godot 2") {
-				preset_accent_color = Color(0.53, 0.67, 0.89);
-				preset_base_color = Color(0.24, 0.23, 0.27);
-				preset_icon_saturation = 1;
-			} else if (config.preset == "Godot 3") {
-				preset_accent_color = Color(0.44, 0.73, 0.98);
-				preset_base_color = Color(0.21, 0.24, 0.29);
-				preset_icon_saturation = 1;
+				preset_icon_saturation = 1.6;
+			} else if (config.preset == "Breeze Dark" || config.preset == "Tokyo Night") {
+				// 2. BREEZE DARK -> TOKYO NIGHT
+				preset_accent_color = Color(0.478, 0.635, 0.969); // Electric Blue #7aa2f7
+				preset_base_color = Color(0.102, 0.106, 0.149);   // Midnight Slate #1a1b26
+				preset_contrast = 0.32;
+				preset_icon_saturation = 1.4;
+			} else if (config.preset == "Godot 2" || config.preset == "Nord Frost") {
+				// 3. GODOT 2 -> NORD FROST
+				preset_accent_color = Color(0.533, 0.753, 0.816); // Frost Blue #88c0d0
+				preset_base_color = Color(0.180, 0.204, 0.251);   // Polar Night #2e3440
+				preset_contrast = 0.25;
+				preset_icon_saturation = 1.25;
+			} else if (config.preset == "Godot 3" || config.preset == "Catppuccin Mocha") {
+				// 4. GODOT 3 -> CATPPUCCIN MOCHA MAUVE
+				preset_accent_color = Color(0.796, 0.651, 0.969); // Mauve #cba6f7
+				preset_base_color = Color(0.118, 0.118, 0.180);   // Deep Slate #1e1e2e
+				preset_contrast = 0.28;
+				preset_icon_saturation = 1.35;
 			} else if (config.preset == "Gray") {
-				preset_accent_color = Color(0.44, 0.73, 0.98);
-				preset_base_color = Color(0.24, 0.24, 0.24);
-			} else if (config.preset == "Light") {
+				// 5. GRAY -> JETBRAINS DARK CHARCOAL
+				preset_accent_color = Color(0.35, 0.70, 1.00);    // Sapphire
+				preset_base_color = Color(0.125, 0.130, 0.140);   // Deep Charcoal
+				preset_contrast = 0.26;
+				preset_icon_saturation = 1.3;
+			} else if (config.preset == "Light" || config.preset == "Solarized (Light)") {
 				preset_accent_color = Color(0.18, 0.50, 1.00);
-				preset_base_color = Color(0.9, 0.9, 0.9);
+				preset_base_color = Color(0.92, 0.92, 0.92);
 				preset_contrast = light_contrast;
-				preset_icon_saturation = 1;
+				preset_icon_saturation = 1.0;
 			} else if (config.preset == "Solarized (Dark)") {
 				preset_accent_color = Color(0.15, 0.55, 0.82);
 				preset_base_color = Color(0.03, 0.21, 0.26);
 				preset_contrast = 0.23;
-			} else if (config.preset == "Solarized (Light)") {
-				preset_accent_color = Color(0.15, 0.55, 0.82);
-				preset_base_color = Color(0.89, 0.86, 0.79);
-				preset_contrast = light_contrast;
-			} else { // Default - Modern Catppuccin / Tokyo Hybrid Look
-				preset_accent_color = Color(0.537, 0.706, 0.980); // #89b4fa
-				preset_base_color = Color(0.118, 0.122, 0.180);   // #1e1e2e
+			} else {
+				// 6. DEFAULT -> MODERN CATPPUCCIN MOCHA & TOKYO HYBRID
+				preset_accent_color = Color(0.537, 0.706, 0.980); // Pastel Sapphire #89b4fa
+				preset_base_color = Color(0.118, 0.122, 0.180);   // Deep Slate #1e1e2e
 				preset_contrast = 0.26;
 				preset_icon_saturation = 1.35;
 			}
@@ -402,7 +381,7 @@ EditorThemeManager::ThemeConfiguration EditorThemeManager::_create_theme_config(
 			config.preset = "Custom";
 		}
 
-		// Enforce values in case they were adjusted or overridden.
+		// Enforce values
 		EditorSettings::get_singleton()->set_manually("interface/theme/color_preset", config.preset);
 		EditorSettings::get_singleton()->set_manually("interface/theme/accent_color", config.accent_color);
 		EditorSettings::get_singleton()->set_manually("interface/theme/base_color", config.base_color);
@@ -422,15 +401,11 @@ EditorThemeManager::ThemeConfiguration EditorThemeManager::_create_theme_config(
 				preset_base_spacing = 2;
 				preset_extra_spacing = 2;
 				preset_dialogs_buttons_min_size = Size2(90, 26);
-			} else if (config.spacing_preset == "Touch (Mobile)") {
+			} else if (config.spacing_preset == "Touch (Mobile)" || config.spacing_preset == "Spacious") {
 				// Malalaking buttons at comfortable spacing para sa Android touchscreen
 				preset_base_spacing = 7;
 				preset_extra_spacing = 4;
 				preset_dialogs_buttons_min_size = Size2(120, 42);
-			} else if (config.spacing_preset == "Spacious") {
-				preset_base_spacing = 6;
-				preset_extra_spacing = 2;
-				preset_dialogs_buttons_min_size = Size2(112, 36);
 			} else { // Default
 				preset_base_spacing = 5;
 				preset_extra_spacing = 1;
@@ -445,7 +420,6 @@ EditorThemeManager::ThemeConfiguration EditorThemeManager::_create_theme_config(
 			EditorSettings::get_singleton()->set_initial_value("interface/theme/additional_spacing", config.extra_spacing);
 		}
 
-		// Enforce values in case they were adjusted or overridden.
 		EditorSettings::get_singleton()->set_manually("interface/theme/spacing_preset", config.spacing_preset);
 		EditorSettings::get_singleton()->set_manually("interface/theme/base_spacing", config.base_spacing);
 		EditorSettings::get_singleton()->set_manually("interface/theme/additional_spacing", config.extra_spacing);
