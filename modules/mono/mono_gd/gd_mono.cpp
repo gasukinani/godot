@@ -57,7 +57,6 @@ static void *hostpolicy_lib_handle = nullptr;
 static void *active_coreclr_handle = nullptr;
 static unsigned int active_domain_id = 0;
 
-// In-Process Roslyn Compiler function delegate signature
 typedef int (*roslyn_compile_project_fn)(const char *project_dir, const char *output_dll, char *error_buf, int error_buf_size);
 static roslyn_compile_project_fn roslyn_compile_fn = nullptr;
 
@@ -644,7 +643,6 @@ godot_plugins_initialize_fn initialize_with_hostfxr(bool &r_runtime_initialized)
 	load_assembly_and_get_function_pointer_fn load_assembly_fn =
 			(load_assembly_and_get_function_pointer_fn)load_assembly_and_get_function_pointer;
 
-	// I-bind ang In-Process Roslyn Compiler Delegate kung mayroon
 	String compiler_dll = "/storage/emulated/0/mono/assemblies/GodotAndroidCompiler.dll";
 	if (FileAccess::exists(compiler_dll)) {
 		load_assembly_fn(
@@ -823,7 +821,6 @@ godot_plugins_initialize_fn initialize_coreclr_fallback(bool &r_runtime_initiali
 
 	r_runtime_initialized = true;
 
-	// Subukang i-bind ang In-Process Roslyn Compiler via CoreCLR delegate
 	String compiler_dll = "/storage/emulated/0/mono/assemblies/GodotAndroidCompiler.dll";
 	if (FileAccess::exists(compiler_dll)) {
 		int comp_rc = coreclr_create_delegate(active_coreclr_handle, active_domain_id,
@@ -860,18 +857,6 @@ godot_plugins_initialize_fn initialize_coreclr_fallback(bool &r_runtime_initiali
 
 	return godot_plugins_initialize;
 }
-
-#ifdef TOOLS_ENABLED
-// Custom Build Hook Callback para pigilan ang pag-crash ng Hammer / Build button
-bool intercepted_editor_build_callback() {
-	write_mono_log(".NET: [Hammer Clicked] Intercepted editor build request!");
-	bool success = execute_hybrid_csharp_build();
-	if (success) {
-		GDMono::get_singleton()->reload_project_assemblies();
-	}
-	return success;
-}
-#endif
 
 } // namespace
 
@@ -989,12 +974,6 @@ void GDMono::initialize() {
 	}
 
 	plugin_callbacks = plugin_callbacks_res;
-
-	// SALUHIN ANG BUILD CALLBACK: Ipalit ang ating ligtas na hybrid compiler para hindi mag-crash ang martilyo
-	if (plugin_callbacks.BuildProjectCallback != nullptr) {
-		plugin_callbacks.BuildProjectCallback = &intercepted_editor_build_callback;
-		write_mono_log(".NET: Hammer/Build callback securely intercepted with Hybrid Engine!");
-	}
 
 #else
 	bool init_ok = godot_plugins_initialize(godot_dll_handle, &managed_callbacks,
