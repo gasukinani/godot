@@ -203,6 +203,32 @@ void ensure_csharp_project_files_exist() {
 		write_mono_log(".NET: Synced GodotSharp & GodotTools assemblies to project.");
 	}
 }
+
+uint64_t get_latest_cs_modified_time(const String &p_dir) {
+	uint64_t latest = 0;
+	Ref<DirAccess> da = DirAccess::open(p_dir);
+	if (da.is_valid()) {
+		da->list_dir_begin();
+		for (String file = da->get_next(); !file.is_empty(); file = da->get_next()) {
+			if (file == "." || file == ".." || file == ".godot") {
+				continue;
+			}
+			String full_path = p_dir.path_join(file);
+			if (da->current_is_dir()) {
+				uint64_t sub_latest = get_latest_cs_modified_time(full_path);
+				if (sub_latest > latest) {
+					latest = sub_latest;
+				}
+			} else if (file.ends_with(".cs")) {
+				uint64_t mod_time = FileAccess::get_modified_time(full_path);
+				if (mod_time > latest) {
+					latest = mod_time;
+				}
+			}
+		}
+	}
+	return latest;
+}
 #endif
 
 hostfxr_initialize_for_runtime_config_fn hostfxr_initialize_for_runtime_config = nullptr;
@@ -376,7 +402,7 @@ bool compile_csharp_project_via_termux_socket() {
 }
 
 bool execute_hybrid_csharp_build() {
-	write_mono_log(">>>>> [BUILD TRIGGERED] Starting Hybrid C# Build Engine <<<<<");
+	write_mono_log(">>>>> [AUTO-BUILD] Starting Hybrid C# Build Engine <<<<<");
 
 	String project_dir = ProjectSettings::get_singleton()->globalize_path("res://");
 	String project_name = get_csharp_project_name();
@@ -1009,9 +1035,26 @@ void GDMono::_try_load_project_assembly() {
 		return;
 	}
 	write_mono_log(".NET: Attempting to load project assembly...");
+
+	// 1. Suriin kung out-of-date o may binagong .cs files
+	String project_dir = ProjectSettings::get_singleton()->globalize_path("res://");
+	uint64_t latest_cs_time = get_latest_cs_modified_time(project_dir);
+
+	bool need_build = false;
+	if (project_assembly_modified_time == 0 || latest_cs_time > project_assembly_modified_time) {
+		write_mono_log(".NET: Detected modified or missing .cs files! Auto-compiling before launch...");
+		need_build = true;
+	}
+
+#if defined(ANDROID_ENABLED)
+	if (need_build) {
+		execute_hybrid_csharp_build();
+	}
+#endif
+
 	if (!_load_project_assembly()) {
 #if defined(ANDROID_ENABLED)
-		write_mono_log(".NET: Project assembly missing. Triggering Hybrid Compiler...");
+		write_mono_log(".NET: Project assembly missing. Retrying Hybrid Compiler...");
 		if (execute_hybrid_csharp_build()) {
 			if (_load_project_assembly()) {
 				return;
@@ -1120,7 +1163,7 @@ Error GDMono::reload_project_assemblies() {
 		return ERR_BUG;
 	}
 #if defined(ANDROID_ENABLED) && defined(TOOLS_ENABLED)
-	write_mono_log(".NET: Recompiling project before reloading assemblies...");
+	write_mono_log(".NET: [Pre-Run/Reload Hook] Checking if build is needed before running...");
 	execute_hybrid_csharp_build();
 #endif
 	if (!_load_project_assembly()) {
