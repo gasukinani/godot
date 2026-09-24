@@ -71,16 +71,6 @@ void write_mono_log(const String &p_msg) {
 #endif
 }
 
-#if defined(ANDROID_ENABLED) && defined(TOOLS_ENABLED)
-// Magbalik ng totoong EditorPlugin instance sa halip na generic Object o nullptr
-// upang kapag ini-cast ito ng C++ Engine (Object::cast_to<EditorPlugin>),
-// maging VALID ito at hindi mag-crash sa Pure Virtual Call o Null Pointer Dereference.
-static Object *dummy_load_tools_assembly(const char16_t *p_path, const void **p_unmanaged_callbacks, int p_unmanaged_callbacks_size) {
-	write_mono_log(".NET: [Notice] LoadToolsAssembly bypassed safely on Android. Returning dummy EditorPlugin.");
-	return memnew(EditorPlugin);
-}
-#endif
-
 #ifdef _WIN32
 static_assert(sizeof(char_t) == sizeof(char16_t));
 using HostFxrCharString = Char16String;
@@ -144,15 +134,12 @@ void ensure_csharp_project_files_exist() {
 		}
 	}
 
-	// 1. Tiyaking may bin directory ang project
 	String bin_dir = project_dir.path_join(".godot/mono/temp/bin/Debug");
 	DirAccess::make_dir_recursive_absolute(bin_dir);
 
-	// 2. Tiyaking may GodotSharp/Tools folder sa loob ng project
 	String tools_dir = project_dir.path_join("GodotSharp/Tools");
 	DirAccess::make_dir_recursive_absolute(tools_dir);
 
-	// 3. I-sync ang lahat ng GodotSharp, GodotTools, at GodotPlugins DLLs mula sa storage
 	String mono_src_dir = "/storage/emulated/0/mono/assemblies";
 	if (!DirAccess::exists(mono_src_dir)) {
 		mono_src_dir = "/storage/emulated/0/mono";
@@ -163,13 +150,11 @@ void ensure_csharp_project_files_exist() {
 		da->list_dir_begin();
 		for (String file = da->get_next(); !file.is_empty(); file = da->get_next()) {
 			if (!da->current_is_dir() && file.ends_with(".dll")) {
-				// Kopyahin sa bin/Debug
 				String dst_bin = bin_dir.path_join(file);
 				if (!FileAccess::exists(dst_bin)) {
 					DirAccess::copy_absolute(mono_src_dir.path_join(file), dst_bin);
 				}
 
-				// Kopyahin sa GodotSharp/Tools
 				if (file.begins_with("GodotTools") || file.begins_with("GodotSharp") || file.begins_with("GodotPlugins")) {
 					String dst_tools = tools_dir.path_join(file);
 					if (!FileAccess::exists(dst_tools)) {
@@ -260,7 +245,6 @@ bool compile_csharp_project_on_android() {
 	serv_addr.sin_port = htons(8088);
 	inet_pton(AF_INET, "127.0.0.1", &serv_addr.sin_addr);
 
-	// Timeout na 90 seconds para sa build process
 	struct timeval tv;
 	tv.tv_sec = 90;
 	tv.tv_usec = 0;
@@ -830,6 +814,7 @@ void GDMono::initialize() {
 	gdmono::PluginCallbacks plugin_callbacks_res;
 	write_mono_log(".NET: Calling godot_plugins_initialize()...");
 
+	// Ibalik ang orihinal na editor hint para ma-load ang GodotSharpEditor.dll
 	bool init_ok = godot_plugins_initialize(godot_dll_handle,
 			Engine::get_singleton()->is_editor_hint(),
 			&plugin_callbacks_res, &managed_callbacks,
@@ -839,14 +824,8 @@ void GDMono::initialize() {
 		ERR_PRINT(".NET: GodotPlugins initialization failed. Check /storage/emulated/0/mono/mono_log.txt");
 		return;
 	}
+	// Ibalik ang buong orihinal na plugin callbacks nang walang dummy modification
 	plugin_callbacks = plugin_callbacks_res;
-
-#if defined(ANDROID_ENABLED)
-	// I-route sa dummy callback na nagbabalik ng valid na EditorPlugin pointer
-	// upang hindi mag-crash ang C++ caller (EditorNode) kapag ini-cast at tinawag ito.
-	plugin_callbacks.LoadToolsAssemblyCallback = &dummy_load_tools_assembly;
-	write_mono_log(".NET: Safe dummy LoadToolsAssemblyCallback assigned for Android.");
-#endif
 
 #else
 	bool init_ok = godot_plugins_initialize(godot_dll_handle, &managed_callbacks,
