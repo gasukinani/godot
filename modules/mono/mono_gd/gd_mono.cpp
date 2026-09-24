@@ -70,6 +70,16 @@ void write_mono_log(const String &p_msg) {
 #endif
 }
 
+#if defined(ANDROID_ENABLED) && defined(TOOLS_ENABLED)
+// Dummy callback para kapag tinawag ng Godot C++ engine ang LoadToolsAssembly,
+// hindi ito tatalon sa 0x0 (NULL pointer) at hindi magkaka-SIGSEGV crash.
+template <typename... Args>
+static bool dummy_load_tools_assembly(Args... p_args) {
+	write_mono_log(".NET: [Notice] LoadToolsAssembly bypassed safely on Android.");
+	return false;
+}
+#endif
+
 #ifdef _WIN32
 static_assert(sizeof(char_t) == sizeof(char16_t));
 using HostFxrCharString = Char16String;
@@ -831,9 +841,10 @@ void GDMono::initialize() {
 	plugin_callbacks = plugin_callbacks_res;
 
 #if defined(ANDROID_ENABLED)
-	// Sa Android, i-disable lang ang desktop Tools assembly callback para maiwasan ang BuildManager desktop crash
-	plugin_callbacks.LoadToolsAssemblyCallback = nullptr;
-	write_mono_log(".NET: Disabled LoadToolsAssemblyCallback for Android stability.");
+	// I-route sa dummy callback sa halip na nullptr para kung tawagin ito ng C++ engine,
+	// may valid na function pointer ito at HINDI tatalon sa 0x0 (SIGSEGV crash).
+	plugin_callbacks.LoadToolsAssemblyCallback = &dummy_load_tools_assembly;
+	write_mono_log(".NET: Safe dummy LoadToolsAssemblyCallback assigned for Android.");
 #endif
 
 #else
