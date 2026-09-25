@@ -70,6 +70,15 @@ static GDMonoCache::ManagedCallbacks s_cached_managed_callbacks{};
 typedef int (*roslyn_compile_project_fn)(const char *project_dir, const char *output_dll, char *error_buf, int error_buf_size);
 static roslyn_compile_project_fn roslyn_compile_fn = nullptr;
 
+// Helper function para sa tamang pagkuha ng file size sa Godot 4
+uint64_t get_file_size(const String &p_path) {
+	Ref<FileAccess> f = FileAccess::open(p_path, FileAccess::READ);
+	if (f.is_valid()) {
+		return f->get_length();
+	}
+	return 0;
+}
+
 void write_mono_log(const String &p_msg) {
 	print_line(p_msg);
 #if defined(ANDROID_ENABLED)
@@ -514,7 +523,6 @@ bool execute_hybrid_csharp_build() {
 	}
 
 	// Step 2: ROSLYN SIGSEGV GUARD
-	// Kung walang OpenSSL sa Android, HUWAG patatakbuhin ang roslyn_compile_fn upang hindi mag-crash via SIGSEGV!
 	if (!s_has_crypto_support) {
 		write_mono_log(".NET: [Roslyn Guard] In-process compilation skipped: OpenSSL (libcrypto.so.3) is missing.");
 		write_mono_log(".NET: [Action Required] Please start the Termux build daemon on port 8088, or copy libcrypto.so.3 to /storage/emulated/0/mono/");
@@ -541,8 +549,8 @@ bool execute_hybrid_csharp_build() {
 			return true;
 		} else {
 			write_mono_log(String(".NET: [Roslyn Notice] In-process compiler returned ") + itos(res) + ":\n" + String::utf8(err_buffer));
-			// Burahin ang sirang output kung nag-fail ang compilation
-			if (FileAccess::exists(output_dll) && FileAccess::get_file_size(output_dll) < 1024) {
+			// Burahin ang sirang output kung nag-fail ang compilation gamit ang get_file_size()
+			if (FileAccess::exists(output_dll) && get_file_size(output_dll) < 1024) {
 				DirAccess::remove_absolute(output_dll);
 			}
 		}
@@ -1220,9 +1228,9 @@ void GDMono::_try_load_project_assembly() {
 	bool dll_exists = FileAccess::exists(output_dll);
 	uint64_t dll_time = 0;
 
-	// I-verify kung ang DLL ay hindi corrupted o 0-byte
+	// I-verify kung ang DLL ay hindi corrupted o 0-byte gamit ang get_file_size()
 	if (dll_exists) {
-		uint64_t sz = FileAccess::get_file_size(output_dll);
+		uint64_t sz = get_file_size(output_dll);
 		if (sz < 1024) {
 			write_mono_log(".NET: Cleaning up corrupted/truncated output DLL (size < 1KB)...");
 			DirAccess::remove_absolute(output_dll);
@@ -1314,8 +1322,8 @@ bool GDMono::_load_project_assembly() {
 		for (int j = 0; j < name_variations.size(); j++) {
 			String candidate = dir.path_join(name_variations[j] + ".dll");
 			if (FileAccess::exists(candidate)) {
-				// ANTI-CORRUPT CHECK: Huwag pansinin ang file na 0 bytes o sira
-				if (FileAccess::get_file_size(candidate) < 1024) {
+				// ANTI-CORRUPT CHECK: Huwag pansinin ang file na 0 bytes o sira gamit ang get_file_size()
+				if (get_file_size(candidate) < 1024) {
 					write_mono_log(".NET: Discarding corrupted/0-byte assembly candidate: " + candidate);
 					DirAccess::remove_absolute(candidate);
 					continue;
