@@ -291,10 +291,63 @@ String prepare_android_executable_lib(const String &p_filename) {
 	return FileAccess::exists(internal_path) ? internal_path : p_filename;
 }
 
+void preload_android_crypto_libs() {
+	Vector<String> search_dirs;
+	search_dirs.push_back("/storage/emulated/0/mono");
+	search_dirs.push_back("/storage/emulated/0/mono/lib");
+	search_dirs.push_back("/storage/emulated/0/mono/assemblies");
+	search_dirs.push_back(OS::get_singleton()->get_user_data_dir().path_join("mono_libs"));
+	search_dirs.push_back("/data/data/com.termux/files/usr/lib");
+
+	const char *lib_names[] = {
+		"libcrypto.so.3",
+		"libcrypto.so.1.1",
+		"libcrypto.so",
+		"libssl.so.3",
+		"libssl.so.1.1",
+		"libssl.so",
+		"libSystem.Security.Cryptography.Native.OpenSsl.so",
+		nullptr
+	};
+
+	for (int i = 0; lib_names[i] != nullptr; i++) {
+		for (const String &dir : search_dirs) {
+			String full_path = dir.path_join(lib_names[i]);
+			if (FileAccess::exists(full_path)) {
+				void *handle = dlopen(full_path.utf8().get_data(), RTLD_NOW | RTLD_GLOBAL);
+				if (handle) {
+					write_mono_log(".NET: Preloaded global crypto lib: " + full_path);
+					break;
+				}
+			}
+		}
+	}
+}
+
 void sync_all_android_native_libs() {
 	String ext_dir_path = "/storage/emulated/0/mono";
 	String internal_dir = OS::get_singleton()->get_user_data_dir().path_join("mono_libs");
 	DirAccess::make_dir_recursive_absolute(internal_dir);
+
+	// Ayusin ang libdl.so.2 dependency para sa glibc-linked libraries
+	String libdl2_path = internal_dir.path_join("libdl.so.2");
+	if (!FileAccess::exists(libdl2_path)) {
+		const char *sys_libdl[] = {
+			"/apex/com.android.runtime/lib64/bionic/libdl.so",
+			"/system/lib64/libdl.so",
+			"/system/lib/libdl.so",
+			nullptr
+		};
+		for (int i = 0; sys_libdl[i] != nullptr; i++) {
+			if (FileAccess::exists(sys_libdl[i])) {
+#ifdef UNIX_ENABLED
+				symlink(sys_libdl[i], libdl2_path.utf8().get_data());
+				write_mono_log(String(".NET: Created fallback symlink: libdl.so.2 -> ") + sys_libdl[i]);
+#endif
+				break;
+			}
+		}
+	}
 
 	Ref<DirAccess> da = DirAccess::open(ext_dir_path);
 	if (da.is_valid()) {
@@ -305,6 +358,8 @@ void sync_all_android_native_libs() {
 			}
 		}
 	}
+
+	preload_android_crypto_libs();
 }
 
 void setup_android_dotnet_environment() {
@@ -371,11 +426,11 @@ bool compile_csharp_project_via_termux_socket() {
 	String project_dir = ProjectSettings::get_singleton()->globalize_path("res://");
 	String csproj_file = project_dir.path_join(project_name + ".csproj");
 
-	write_mono_log(".NET: [Fallback] Contacting background compiler (Termux)...");
+	write_mono_log(".NET: [Termux Build] Contacting background compiler daemon...");
 
 	int sock = socket(AF_INET, SOCK_STREAM, 0);
 	if (sock < 0) {
-		write_mono_log(".NET: [Fallback] Socket creation failed.");
+		write_mono_log(".NET: [Termux Build] Socket creation failed.");
 		return false;
 	}
 
@@ -385,15 +440,14 @@ bool compile_csharp_project_via_termux_socket() {
 	serv_addr.sin_port = htons(8088);
 	inet_pton(AF_INET, "127.0.0.1", &serv_addr.sin_addr);
 
-	// Huwag gawing 90s para hindi mag-trigger ng Android ANR (App Not Responding)
 	struct timeval tv;
-	tv.tv_sec = 5;
+	tv.tv_sec = 8;
 	tv.tv_usec = 0;
 	setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tv, sizeof(tv));
 	setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (const char *)&tv, sizeof(tv));
 
 	if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
-		write_mono_log(".NET: [Fallback] Compiler port 8088 not reachable.");
+		write_mono_log(".NET: [Termux Build] Compiler daemon on port 8088 not reachable.");
 		close(sock);
 		return false;
 	}
@@ -416,11 +470,11 @@ bool compile_csharp_project_via_termux_socket() {
 	close(sock);
 
 	if (response.contains("200 OK") || response.contains("BUILD_SUCCESS")) {
-		write_mono_log(".NET: [Fallback] Termux background build SUCCEEDED!");
+		write_mono_log(".NET: [Termux Build] Background compilation SUCCEEDED!");
 		return true;
 	}
 
-	write_mono_log(".NET: [Fallback] Termux build failed.");
+	write_mono_log(".NET: [Termux Build] Daemon returned build failure.");
 	return false;
 }
 
@@ -428,7 +482,6 @@ bool execute_hybrid_csharp_build() {
 	String project_dir = ProjectSettings::get_singleton()->globalize_path("res://");
 	uint64_t latest_cs_time = get_latest_cs_modified_time(project_dir);
 
-	// Kung walang .cs files sa project, huwag piliting mag-compile
 	if (latest_cs_time == 0) {
 		write_mono_log(".NET: No .cs source files found. Skipping compilation.");
 		return true;
@@ -436,6 +489,12 @@ bool execute_hybrid_csharp_build() {
 
 	write_mono_log(">>>>> [AUTO-BUILD] Starting Hybrid C# Build Engine <<<<<");
 
+	// Step 1: Subukan muna ang Termux background compiler (port 8088) kung bukas
+	if (compile_csharp_project_via_termux_socket()) {
+		return true;
+	}
+
+	// Step 2: In-Process Roslyn Compiler fallback
 	String project_name = get_csharp_project_name();
 	String bin_dir = project_dir.path_join(".godot/mono/temp/bin/Debug");
 	DirAccess::make_dir_recursive_absolute(bin_dir);
@@ -457,11 +516,10 @@ bool execute_hybrid_csharp_build() {
 			write_mono_log(String(".NET: [Roslyn Notice] In-process compiler returned ") + itos(res) + ":\n" + String::utf8(err_buffer));
 		}
 	} else {
-		write_mono_log(".NET: [Roslyn Notice] In-Process Roslyn delegate not bound. Switching to fallback.");
+		write_mono_log(".NET: [Roslyn Notice] In-Process Roslyn delegate not bound.");
 	}
 
-	write_mono_log(".NET: Switching to Secondary Fallback (.NET CLI Autobuild)...");
-	return compile_csharp_project_via_termux_socket();
+	return false;
 }
 #endif
 
@@ -978,9 +1036,7 @@ void GDMono::initialize() {
 
 	_init_godot_api_hashes();
 
-	// FIX 1: Kung na-initialize na ang plugins at managed callbacks sa buhay ng Android OS process na ito,
-	// muling gamitin ang cached callbacks at HUWAG tatawagin muli ang godot_plugins_initialize()
-	// dahil bawal mag-set ng DllImportResolver nang higit sa isang beses sa .NET CoreCLR!
+	// Guard laban sa duplicate initialization sa iisang Android OS process
 	if (s_plugins_initialized) {
 		write_mono_log(".NET: Reusing already initialized GodotPlugins and callbacks (Android process reuse).");
 #ifdef TOOLS_ENABLED
@@ -1125,25 +1181,35 @@ void GDMono::_try_load_project_assembly() {
 	write_mono_log(".NET: Attempting to load project assembly...");
 
 	String project_dir = ProjectSettings::get_singleton()->globalize_path("res://");
+	String project_name = get_csharp_project_name();
+	String bin_dir = project_dir.path_join(".godot/mono/temp/bin/Debug");
+	String output_dll = bin_dir.path_join(project_name + ".dll");
+
 	uint64_t latest_cs_time = get_latest_cs_modified_time(project_dir);
 
-	// FIX 2: Huwag mag-compile kung walang anumang .cs file sa project
+	bool dll_exists = FileAccess::exists(output_dll);
+	uint64_t dll_time = dll_exists ? FileAccess::get_modified_time(output_dll) : 0;
+
+	// SMART CHECK: Kung may umiiral nang DLL at mas bago ito kaysa sa mga .cs source files,
+	// huwag piliting mag-compile; gamitin agad ang existing DLL!
 	bool need_build = false;
-	if (latest_cs_time > 0 && (project_assembly_modified_time == 0 || latest_cs_time > project_assembly_modified_time)) {
-		write_mono_log(".NET: Detected modified or missing .cs files! Auto-compiling before launch...");
+	if (!dll_exists && latest_cs_time > 0) {
+		need_build = true;
+	} else if (dll_exists && latest_cs_time > dll_time) {
 		need_build = true;
 	}
 
 #if defined(ANDROID_ENABLED)
 	if (need_build) {
+		write_mono_log(".NET: Detected modified or missing .cs files! Compiling...");
 		execute_hybrid_csharp_build();
 	}
 #endif
 
 	if (!_load_project_assembly()) {
 #if defined(ANDROID_ENABLED)
-		if (latest_cs_time > 0) {
-			write_mono_log(".NET: Project assembly missing. Retrying Hybrid Compiler...");
+		if (latest_cs_time > 0 && !need_build) {
+			write_mono_log(".NET: Project assembly missing or failed to load. Retrying compilation...");
 			if (execute_hybrid_csharp_build()) {
 				if (_load_project_assembly()) {
 					return;
@@ -1258,14 +1324,12 @@ Error GDMono::reload_project_assemblies() {
 	String project_dir = ProjectSettings::get_singleton()->globalize_path("res://");
 	uint64_t latest_cs_time = get_latest_cs_modified_time(project_dir);
 
-	// Mag-build lamang kung may tunay na .cs code at may naunang modified time
 	if (latest_cs_time > 0 && (project_assembly_modified_time == 0 || latest_cs_time > project_assembly_modified_time)) {
 		execute_hybrid_csharp_build();
 	}
 #endif
 
-	// FIX 3: Iwasan ang pagtawag ng LoadProjectAssemblyCallback nang paulit-ulit habang
-	// loaded na ito sa Editor ALC upang hindi mag-throw ng exception sa .NET CoreCLR!
+	// Huwag piliting mag-reinject sa ALC kapag loaded na sa Editor
 	if (project_assembly_path.is_empty()) {
 		if (!_load_project_assembly()) {
 			return ERR_CANT_OPEN;
