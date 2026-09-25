@@ -348,7 +348,7 @@ void preload_android_crypto_libs() {
 #endif
 
 	if (!s_has_crypto_support) {
-		write_mono_log(".NET: Notice - OpenSSL (libcrypto.so.3) not found. In-process Roslyn will be guarded to prevent SIGSEGV.");
+		write_mono_log(".NET: Notice - OpenSSL not fully loaded. In-process Roslyn will be guarded.");
 	}
 }
 
@@ -468,8 +468,9 @@ bool compile_csharp_project_via_termux_socket() {
 	serv_addr.sin_port = htons(8088);
 	inet_pton(AF_INET, "127.0.0.1", &serv_addr.sin_addr);
 
+	// TIMEOUT: Bigyan ng 60 seconds ang dotnet build para makatapos bago mag-close ang socket
 	struct timeval tv;
-	tv.tv_sec = 6;
+	tv.tv_sec = 60;
 	tv.tv_usec = 0;
 	setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tv, sizeof(tv));
 	setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (const char *)&tv, sizeof(tv));
@@ -488,7 +489,7 @@ bool compile_csharp_project_via_termux_socket() {
 #endif
 	send(sock, req.utf8().get_data(), req.utf8().length(), MSG_NOSIGNAL);
 
-	char buffer[1024];
+	char buffer[2048];
 	String response;
 	int bytes_read = 0;
 	while ((bytes_read = recv(sock, buffer, sizeof(buffer) - 1, 0)) > 0) {
@@ -503,6 +504,9 @@ bool compile_csharp_project_via_termux_socket() {
 	}
 
 	write_mono_log(".NET: [Termux Build] Daemon returned build failure.");
+	if (!response.is_empty()) {
+		write_mono_log(".NET: [Termux Output Details]:\n" + response);
+	}
 	return false;
 }
 
@@ -522,42 +526,9 @@ bool execute_hybrid_csharp_build() {
 		return true;
 	}
 
-	// Step 2: ROSLYN SIGSEGV GUARD
-	if (!s_has_crypto_support) {
-		write_mono_log(".NET: [Roslyn Guard] In-process compilation skipped: OpenSSL (libcrypto.so.3) is missing.");
-		write_mono_log(".NET: [Action Required] Please start the Termux build daemon on port 8088, or copy libcrypto.so.3 to /storage/emulated/0/mono/");
-		return false;
-	}
-
-	// Step 3: In-Process Roslyn Compiler
-	String project_name = get_csharp_project_name();
-	String bin_dir = project_dir.path_join(".godot/mono/temp/bin/Debug");
-	DirAccess::make_dir_recursive_absolute(bin_dir);
-	String output_dll = bin_dir.path_join(project_name + ".dll");
-
-	if (roslyn_compile_fn != nullptr) {
-		write_mono_log(".NET: [Roslyn Engine] Compiling in RAM via Microsoft.CodeAnalysis...");
-		char err_buffer[2048] = { 0 };
-		int res = roslyn_compile_fn(
-				project_dir.utf8().get_data(),
-				output_dll.utf8().get_data(),
-				err_buffer,
-				sizeof(err_buffer));
-
-		if (res == 0) {
-			write_mono_log(".NET: [Roslyn Engine] RAM BUILD SUCCEEDED! -> " + output_dll);
-			return true;
-		} else {
-			write_mono_log(String(".NET: [Roslyn Notice] In-process compiler returned ") + itos(res) + ":\n" + String::utf8(err_buffer));
-			// Burahin ang sirang output kung nag-fail ang compilation gamit ang get_file_size()
-			if (FileAccess::exists(output_dll) && get_file_size(output_dll) < 1024) {
-				DirAccess::remove_absolute(output_dll);
-			}
-		}
-	} else {
-		write_mono_log(".NET: [Roslyn Notice] In-Process Roslyn delegate not bound.");
-	}
-
+	// Step 2: Huwag patakbuhin ang in-process Roslyn upang maiwasan ang SIGSEGV native crash
+	write_mono_log(".NET: [Build Notice] Compilation in Termux failed or port was closed.");
+	write_mono_log(".NET: In-process Roslyn bypassed to prevent app crash.");
 	return false;
 }
 #endif
