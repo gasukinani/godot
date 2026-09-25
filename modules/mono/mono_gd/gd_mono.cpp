@@ -59,6 +59,12 @@ static void *active_coreclr_handle = nullptr;
 static unsigned int active_domain_id = 0;
 
 static bool s_runtime_bootstrapped = false;
+static bool s_plugins_initialized = false;
+
+#ifdef TOOLS_ENABLED
+static gdmono::PluginCallbacks s_cached_plugin_callbacks{};
+#endif
+static GDMonoCache::ManagedCallbacks s_cached_managed_callbacks{};
 
 typedef int (*roslyn_compile_project_fn)(const char *project_dir, const char *output_dll, char *error_buf, int error_buf_size);
 static roslyn_compile_project_fn roslyn_compile_fn = nullptr;
@@ -379,10 +385,12 @@ bool compile_csharp_project_via_termux_socket() {
 	serv_addr.sin_port = htons(8088);
 	inet_pton(AF_INET, "127.0.0.1", &serv_addr.sin_addr);
 
+	// Huwag gawing 90s para hindi mag-trigger ng Android ANR (App Not Responding)
 	struct timeval tv;
-	tv.tv_sec = 90;
+	tv.tv_sec = 5;
 	tv.tv_usec = 0;
 	setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tv, sizeof(tv));
+	setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (const char *)&tv, sizeof(tv));
 
 	if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
 		write_mono_log(".NET: [Fallback] Compiler port 8088 not reachable.");
@@ -392,7 +400,11 @@ bool compile_csharp_project_via_termux_socket() {
 
 	String query_params = "?path=" + project_dir.uri_encode() + "&proj=" + csproj_file.uri_encode();
 	String req = "GET /" + query_params + " HTTP/1.1\r\nHost: 127.0.0.1:8088\r\nConnection: close\r\n\r\n";
-	send(sock, req.utf8().get_data(), req.utf8().length(), 0);
+
+#ifndef MSG_NOSIGNAL
+#define MSG_NOSIGNAL 0
+#endif
+	send(sock, req.utf8().get_data(), req.utf8().length(), MSG_NOSIGNAL);
 
 	char buffer[1024];
 	String response;
@@ -413,9 +425,17 @@ bool compile_csharp_project_via_termux_socket() {
 }
 
 bool execute_hybrid_csharp_build() {
+	String project_dir = ProjectSettings::get_singleton()->globalize_path("res://");
+	uint64_t latest_cs_time = get_latest_cs_modified_time(project_dir);
+
+	// Kung walang .cs files sa project, huwag piliting mag-compile
+	if (latest_cs_time == 0) {
+		write_mono_log(".NET: No .cs source files found. Skipping compilation.");
+		return true;
+	}
+
 	write_mono_log(">>>>> [AUTO-BUILD] Starting Hybrid C# Build Engine <<<<<");
 
-	String project_dir = ProjectSettings::get_singleton()->globalize_path("res://");
 	String project_name = get_csharp_project_name();
 	String bin_dir = project_dir.path_join(".godot/mono/temp/bin/Debug");
 	DirAccess::make_dir_recursive_absolute(bin_dir);
@@ -958,6 +978,33 @@ void GDMono::initialize() {
 
 	_init_godot_api_hashes();
 
+	// FIX 1: Kung na-initialize na ang plugins at managed callbacks sa buhay ng Android OS process na ito,
+	// muling gamitin ang cached callbacks at HUWAG tatawagin muli ang godot_plugins_initialize()
+	// dahil bawal mag-set ng DllImportResolver nang higit sa isang beses sa .NET CoreCLR!
+	if (s_plugins_initialized) {
+		write_mono_log(".NET: Reusing already initialized GodotPlugins and callbacks (Android process reuse).");
+#ifdef TOOLS_ENABLED
+		plugin_callbacks = s_cached_plugin_callbacks;
+#endif
+		GDMonoCache::update_godot_api_cache(s_cached_managed_callbacks);
+		_on_core_api_assembly_loaded();
+
+		initialized = true;
+		runtime_initialized = true;
+
+#ifdef TOOLS_ENABLED
+		if (!Engine::get_singleton()->is_project_manager_hint()) {
+			String current_proj_name = get_csharp_project_name();
+			ProjectSettings::get_singleton()->set_setting("dotnet/project/assembly_name", current_proj_name);
+
+			ensure_csharp_project_files_exist();
+			_try_load_project_assembly();
+		}
+#endif
+		write_mono_log(".NET: GDMono successfully re-initialized using cached state!");
+		return;
+	}
+
 	godot_plugins_initialize_fn godot_plugins_initialize = nullptr;
 
 #if defined(ANDROID_ENABLED)
@@ -1034,6 +1081,7 @@ void GDMono::initialize() {
 	}
 
 	plugin_callbacks = plugin_callbacks_res;
+	s_cached_plugin_callbacks = plugin_callbacks_res;
 
 #else
 	bool init_ok = godot_plugins_initialize(godot_dll_handle, &managed_callbacks,
@@ -1045,6 +1093,9 @@ void GDMono::initialize() {
 	}
 #endif
 
+	s_cached_managed_callbacks = managed_callbacks;
+	s_plugins_initialized = true;
+
 	write_mono_log(".NET: SUCCESS! Updating api cache...");
 	GDMonoCache::update_godot_api_cache(managed_callbacks);
 
@@ -1054,7 +1105,6 @@ void GDMono::initialize() {
 	runtime_initialized = true;
 
 #ifdef TOOLS_ENABLED
-	// Huwag subukang gumawa ng files o mag-load ng game assembly habang nasa Project Manager
 	if (!Engine::get_singleton()->is_project_manager_hint()) {
 		String current_proj_name = get_csharp_project_name();
 		ProjectSettings::get_singleton()->set_setting("dotnet/project/assembly_name", current_proj_name);
@@ -1077,8 +1127,9 @@ void GDMono::_try_load_project_assembly() {
 	String project_dir = ProjectSettings::get_singleton()->globalize_path("res://");
 	uint64_t latest_cs_time = get_latest_cs_modified_time(project_dir);
 
+	// FIX 2: Huwag mag-compile kung walang anumang .cs file sa project
 	bool need_build = false;
-	if (project_assembly_modified_time == 0 || latest_cs_time > project_assembly_modified_time) {
+	if (latest_cs_time > 0 && (project_assembly_modified_time == 0 || latest_cs_time > project_assembly_modified_time)) {
 		write_mono_log(".NET: Detected modified or missing .cs files! Auto-compiling before launch...");
 		need_build = true;
 	}
@@ -1091,10 +1142,12 @@ void GDMono::_try_load_project_assembly() {
 
 	if (!_load_project_assembly()) {
 #if defined(ANDROID_ENABLED)
-		write_mono_log(".NET: Project assembly missing. Retrying Hybrid Compiler...");
-		if (execute_hybrid_csharp_build()) {
-			if (_load_project_assembly()) {
-				return;
+		if (latest_cs_time > 0) {
+			write_mono_log(".NET: Project assembly missing. Retrying Hybrid Compiler...");
+			if (execute_hybrid_csharp_build()) {
+				if (_load_project_assembly()) {
+					return;
+				}
 			}
 		}
 #endif
@@ -1199,12 +1252,24 @@ Error GDMono::reload_project_assemblies() {
 	if (!runtime_initialized) {
 		return ERR_BUG;
 	}
+
 #if defined(ANDROID_ENABLED) && defined(TOOLS_ENABLED)
 	write_mono_log(".NET: [Pre-Run/Reload Hook] Checking if build is needed before running...");
-	execute_hybrid_csharp_build();
+	String project_dir = ProjectSettings::get_singleton()->globalize_path("res://");
+	uint64_t latest_cs_time = get_latest_cs_modified_time(project_dir);
+
+	// Mag-build lamang kung may tunay na .cs code at may naunang modified time
+	if (latest_cs_time > 0 && (project_assembly_modified_time == 0 || latest_cs_time > project_assembly_modified_time)) {
+		execute_hybrid_csharp_build();
+	}
 #endif
-	if (!_load_project_assembly()) {
-		return ERR_CANT_OPEN;
+
+	// FIX 3: Iwasan ang pagtawag ng LoadProjectAssemblyCallback nang paulit-ulit habang
+	// loaded na ito sa Editor ALC upang hindi mag-throw ng exception sa .NET CoreCLR!
+	if (project_assembly_path.is_empty()) {
+		if (!_load_project_assembly()) {
+			return ERR_CANT_OPEN;
+		}
 	}
 	return OK;
 }
@@ -1216,13 +1281,6 @@ GDMono::GDMono() {
 
 GDMono::~GDMono() {
 	finalizing_scripts_domain = true;
-
-	// HUWAG TATAWAGIN ANG dlclose() DITO!
-	// Sa Android, ang app process ay nananatiling bukas pagbalik sa Project Manager.
-	// Ang pag-dlclose sa CoreCLR o hostfxr ay nag-iiwan ng GC background threads na nag-a-access
-	// sa unmapped memory na agad nagdudulot ng SIGSEGV crash.
-	// Pinapanatili natin ang library handles para sa susunod na pagbukas ng project.
-
 	finalizing_scripts_domain = false;
 	initialized = false;
 	singleton = nullptr;
