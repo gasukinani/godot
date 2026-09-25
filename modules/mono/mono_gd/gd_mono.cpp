@@ -60,6 +60,7 @@ static unsigned int active_domain_id = 0;
 
 static bool s_runtime_bootstrapped = false;
 static bool s_plugins_initialized = false;
+static bool s_has_crypto_support = false;
 
 #ifdef TOOLS_ENABLED
 static gdmono::PluginCallbacks s_cached_plugin_callbacks{};
@@ -293,11 +294,10 @@ String prepare_android_executable_lib(const String &p_filename) {
 
 void preload_android_crypto_libs() {
 	Vector<String> search_dirs;
+	search_dirs.push_back(OS::get_singleton()->get_user_data_dir().path_join("mono_libs"));
 	search_dirs.push_back("/storage/emulated/0/mono");
 	search_dirs.push_back("/storage/emulated/0/mono/lib");
 	search_dirs.push_back("/storage/emulated/0/mono/assemblies");
-	search_dirs.push_back(OS::get_singleton()->get_user_data_dir().path_join("mono_libs"));
-	search_dirs.push_back("/data/data/com.termux/files/usr/lib");
 
 	const char *lib_names[] = {
 		"libcrypto.so.3",
@@ -306,9 +306,10 @@ void preload_android_crypto_libs() {
 		"libssl.so.3",
 		"libssl.so.1.1",
 		"libssl.so",
-		"libSystem.Security.Cryptography.Native.OpenSsl.so",
 		nullptr
 	};
+
+	s_has_crypto_support = false;
 
 	for (int i = 0; lib_names[i] != nullptr; i++) {
 		for (const String &dir : search_dirs) {
@@ -317,10 +318,28 @@ void preload_android_crypto_libs() {
 				void *handle = dlopen(full_path.utf8().get_data(), RTLD_NOW | RTLD_GLOBAL);
 				if (handle) {
 					write_mono_log(".NET: Preloaded global crypto lib: " + full_path);
+					s_has_crypto_support = true;
 					break;
 				}
 			}
 		}
+	}
+
+#ifdef UNIX_ENABLED
+	if (!s_has_crypto_support) {
+		void *test_sym = dlsym(RTLD_DEFAULT, "EVP_MD_CTX_new");
+		if (!test_sym) {
+			test_sym = dlsym(RTLD_DEFAULT, "EVP_MD_CTX_create");
+		}
+		if (test_sym) {
+			s_has_crypto_support = true;
+			write_mono_log(".NET: OpenSSL symbols resolved via global namespace.");
+		}
+	}
+#endif
+
+	if (!s_has_crypto_support) {
+		write_mono_log(".NET: Notice - OpenSSL (libcrypto.so.3) not found. In-process Roslyn will be guarded to prevent SIGSEGV.");
 	}
 }
 
@@ -329,7 +348,7 @@ void sync_all_android_native_libs() {
 	String internal_dir = OS::get_singleton()->get_user_data_dir().path_join("mono_libs");
 	DirAccess::make_dir_recursive_absolute(internal_dir);
 
-	// Ayusin ang libdl.so.2 dependency para sa glibc-linked libraries
+	// Fallback symlink para sa libdl.so.2
 	String libdl2_path = internal_dir.path_join("libdl.so.2");
 	if (!FileAccess::exists(libdl2_path)) {
 		const char *sys_libdl[] = {
@@ -441,7 +460,7 @@ bool compile_csharp_project_via_termux_socket() {
 	inet_pton(AF_INET, "127.0.0.1", &serv_addr.sin_addr);
 
 	struct timeval tv;
-	tv.tv_sec = 8;
+	tv.tv_sec = 6;
 	tv.tv_usec = 0;
 	setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tv, sizeof(tv));
 	setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (const char *)&tv, sizeof(tv));
@@ -489,12 +508,20 @@ bool execute_hybrid_csharp_build() {
 
 	write_mono_log(">>>>> [AUTO-BUILD] Starting Hybrid C# Build Engine <<<<<");
 
-	// Step 1: Subukan muna ang Termux background compiler (port 8088) kung bukas
+	// Step 1: Subukan ang Termux background compiler (port 8088)
 	if (compile_csharp_project_via_termux_socket()) {
 		return true;
 	}
 
-	// Step 2: In-Process Roslyn Compiler fallback
+	// Step 2: ROSLYN SIGSEGV GUARD
+	// Kung walang OpenSSL sa Android, HUWAG patatakbuhin ang roslyn_compile_fn upang hindi mag-crash via SIGSEGV!
+	if (!s_has_crypto_support) {
+		write_mono_log(".NET: [Roslyn Guard] In-process compilation skipped: OpenSSL (libcrypto.so.3) is missing.");
+		write_mono_log(".NET: [Action Required] Please start the Termux build daemon on port 8088, or copy libcrypto.so.3 to /storage/emulated/0/mono/");
+		return false;
+	}
+
+	// Step 3: In-Process Roslyn Compiler
 	String project_name = get_csharp_project_name();
 	String bin_dir = project_dir.path_join(".godot/mono/temp/bin/Debug");
 	DirAccess::make_dir_recursive_absolute(bin_dir);
@@ -514,6 +541,10 @@ bool execute_hybrid_csharp_build() {
 			return true;
 		} else {
 			write_mono_log(String(".NET: [Roslyn Notice] In-process compiler returned ") + itos(res) + ":\n" + String::utf8(err_buffer));
+			// Burahin ang sirang output kung nag-fail ang compilation
+			if (FileAccess::exists(output_dll) && FileAccess::get_file_size(output_dll) < 1024) {
+				DirAccess::remove_absolute(output_dll);
+			}
 		}
 	} else {
 		write_mono_log(".NET: [Roslyn Notice] In-Process Roslyn delegate not bound.");
@@ -1036,7 +1067,6 @@ void GDMono::initialize() {
 
 	_init_godot_api_hashes();
 
-	// Guard laban sa duplicate initialization sa iisang Android OS process
 	if (s_plugins_initialized) {
 		write_mono_log(".NET: Reusing already initialized GodotPlugins and callbacks (Android process reuse).");
 #ifdef TOOLS_ENABLED
@@ -1188,10 +1218,20 @@ void GDMono::_try_load_project_assembly() {
 	uint64_t latest_cs_time = get_latest_cs_modified_time(project_dir);
 
 	bool dll_exists = FileAccess::exists(output_dll);
-	uint64_t dll_time = dll_exists ? FileAccess::get_modified_time(output_dll) : 0;
+	uint64_t dll_time = 0;
 
-	// SMART CHECK: Kung may umiiral nang DLL at mas bago ito kaysa sa mga .cs source files,
-	// huwag piliting mag-compile; gamitin agad ang existing DLL!
+	// I-verify kung ang DLL ay hindi corrupted o 0-byte
+	if (dll_exists) {
+		uint64_t sz = FileAccess::get_file_size(output_dll);
+		if (sz < 1024) {
+			write_mono_log(".NET: Cleaning up corrupted/truncated output DLL (size < 1KB)...");
+			DirAccess::remove_absolute(output_dll);
+			dll_exists = false;
+		} else {
+			dll_time = FileAccess::get_modified_time(output_dll);
+		}
+	}
+
 	bool need_build = false;
 	if (!dll_exists && latest_cs_time > 0) {
 		need_build = true;
@@ -1201,7 +1241,7 @@ void GDMono::_try_load_project_assembly() {
 
 #if defined(ANDROID_ENABLED)
 	if (need_build) {
-		write_mono_log(".NET: Detected modified or missing .cs files! Compiling...");
+		write_mono_log(".NET: Detected modified or missing .cs files! Requesting build...");
 		execute_hybrid_csharp_build();
 	}
 #endif
@@ -1274,6 +1314,12 @@ bool GDMono::_load_project_assembly() {
 		for (int j = 0; j < name_variations.size(); j++) {
 			String candidate = dir.path_join(name_variations[j] + ".dll");
 			if (FileAccess::exists(candidate)) {
+				// ANTI-CORRUPT CHECK: Huwag pansinin ang file na 0 bytes o sira
+				if (FileAccess::get_file_size(candidate) < 1024) {
+					write_mono_log(".NET: Discarding corrupted/0-byte assembly candidate: " + candidate);
+					DirAccess::remove_absolute(candidate);
+					continue;
+				}
 				found_path = candidate;
 				break;
 			}
@@ -1310,6 +1356,8 @@ bool GDMono::_load_project_assembly() {
 		write_mono_log(".NET: FULL SUCCESS! Project assembly bound and active: " + project_assembly_path);
 	} else {
 		write_mono_log(".NET: Callback failed to bind assembly: " + found_path);
+		// Kung nag-fail i-load ang corrupted file, alisin ito upang hindi paulit-ulit mag-BadImageFormatException
+		DirAccess::remove_absolute(found_path);
 	}
 	return success;
 }
@@ -1329,7 +1377,6 @@ Error GDMono::reload_project_assemblies() {
 	}
 #endif
 
-	// Huwag piliting mag-reinject sa ALC kapag loaded na sa Editor
 	if (project_assembly_path.is_empty()) {
 		if (!_load_project_assembly()) {
 			return ERR_CANT_OPEN;
